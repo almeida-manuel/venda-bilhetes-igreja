@@ -1,10 +1,10 @@
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, scrolledtext
 import sqlite3
 from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
-from openpyxl.styles import Font
+from openpyxl.styles import Font, Alignment
 from reportlab.lib import colors
 from reportlab.platypus import Table, TableStyle, SimpleDocTemplate, Paragraph
 from reportlab.lib.styles import getSampleStyleSheet
@@ -35,6 +35,8 @@ class DatabaseManager:
         self._criar_tabela()
 
     def _criar_tabela(self):
+        # Cria tabela com coluna 'anotacoes' (opcional). Se a tabela já existir sem a coluna,
+        # fazemos uma migração simples adicionando a coluna.
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS registos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -44,16 +46,28 @@ class DatabaseManager:
                 numero_bilhete TEXT,
                 metodo_pagamento TEXT,
                 fatura TEXT,
-                contribuinte TEXT
+                contribuinte TEXT,
+                anotacoes TEXT
             )
         """)
         self.conn.commit()
 
-    def inserir_registo(self, data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte):
+        # Verificar se a coluna 'anotacoes' existe; se não, adicioná-la (migração para versões antigas)
+        try:
+            self.cursor.execute("PRAGMA table_info(registos)")
+            cols = [r[1] for r in self.cursor.fetchall()]
+            if 'anotacoes' not in cols:
+                self.cursor.execute("ALTER TABLE registos ADD COLUMN anotacoes TEXT")
+                self.conn.commit()
+        except Exception:
+            # Se qualquer erro ocorrer aqui, não queremos quebrar a inicialização; seguir em frente
+            pass
+
+    def inserir_registo(self, data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes=None):
         self.cursor.execute("""
-            INSERT INTO registos (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte))
+            INSERT INTO registos (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes))
         self.conn.commit()
 
     def ultimo_numero_bilhete(self):
@@ -66,7 +80,7 @@ class DatabaseManager:
             dia_str = hoje_str()
         # Assumimos data_hora armazenada como 'YYYY-MM-DD HH:MM:SS'
         self.cursor.execute("""
-            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte
+            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes
             FROM registos
             WHERE date(data_hora) = ?
             ORDER BY id DESC
@@ -76,7 +90,7 @@ class DatabaseManager:
     def procurar_por_bilhete(self, termo):
         termo_like = f"%{termo}%"
         self.cursor.execute("""
-            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte
+            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes
             FROM registos
             WHERE numero_bilhete LIKE ?
             ORDER BY id DESC
@@ -263,7 +277,9 @@ class JanelaPrincipal:
             ("Método de Pagamento:", "combo_pagamento"),
             ("Fatura:", "combo_fatura"),
             ("Nº Contribuinte (opcional):", "entry_contribuinte"),
-            ("Quantidade:", "spin_quantidade")
+            ("Anotações (opcional):", "entry_anotacoes"),
+            ("Quantidade:", "spin_quantidade"),
+            ("Não Entraram:", "spin_nao_entraram")
         ]
 
         nacionalidades = [
@@ -271,9 +287,11 @@ class JanelaPrincipal:
             "Inglesa", "Asiática", "Africana", "Outros"
         ]
 
-        for i, (label, field_type) in enumerate(fields):
+        # usamos um contador de linhas para poder inserir a entrada manual logo abaixo do combo de nacionalidade
+        line = 0
+        for label, field_type in fields:
             tk.Label(form_container, text=label, font=("Segoe UI", 10, "bold"), 
-                    bg="white", fg="#4a5568").grid(row=i, column=0, sticky="w", pady=12, padx=(0, 10))
+                    bg="white", fg="#4a5568").grid(row=line, column=0, sticky="w", pady=12, padx=(0, 10))
 
             if "combo" in field_type:
                 values = nacionalidades if "nacionalidade" in field_type else ["Dinheiro", "Cartão"] if "pagamento" in field_type else ["Sim", "Não"]
@@ -281,25 +299,54 @@ class JanelaPrincipal:
                 combo = ttk.Combobox(form_container, values=values, state="readonly", 
                                    font=("Segoe UI", 10), width=22)
                 combo.set(default)
-                combo.grid(row=i, column=1, sticky="ew", pady=12)
+                combo.grid(row=line, column=1, sticky="ew", pady=12)
                 setattr(self, field_type, combo)
+                # Se este for o combo de nacionalidade, ligar o evento para mostrar entrada manual
+                if "nacionalidade" in field_type:
+                    # a entrada manual deve ficar imediatamente abaixo deste combo
+                    self._manual_row = line + 1
+                    combo.bind('<<ComboboxSelected>>', lambda e: self._on_nacionalidade_change(e))
+                    # reservar linha para a entrada manual (não inserida ainda)
+                    line += 1
             elif "entry" in field_type:
-                entry = ttk.Entry(form_container, font=("Segoe UI", 10), width=25)
-                entry.grid(row=i, column=1, sticky="ew", pady=12)
-                setattr(self, field_type, entry)
+                # Campo de anotações: usar um widget multi-linha (ScrolledText)
+                if "anotacoes" in field_type:
+                    txt = scrolledtext.ScrolledText(form_container, font=("Segoe UI", 10), width=36, height=4, wrap=tk.WORD)
+                    txt.grid(row=line, column=1, sticky="ew", pady=12)
+                    setattr(self, field_type, txt)
+                else:
+                    entry = ttk.Entry(form_container, font=("Segoe UI", 10), width=25)
+                    entry.grid(row=line, column=1, sticky="ew", pady=12)
+                    setattr(self, field_type, entry)
             elif "spin" in field_type:
                 spin = ttk.Spinbox(form_container, from_=1, to=50, width=10, 
                                  font=("Segoe UI", 10))
-                spin.set(1)
-                spin.grid(row=i, column=1, sticky="w", pady=12)
+                # por padrão, 0 pessoas não entraram
+                if 'nao_entraram' in field_type:
+                    spin.set(0)
+                else:
+                    spin.set(1)
+                spin.grid(row=line, column=1, sticky="w", pady=12)
                 setattr(self, field_type, spin)
+
+            # avançar para a próxima linha
+            line += 1
+
+        # criar placeholder para entrada manual (inicialmente escondido)
+        self.manual_nacionalidade_var = tk.StringVar()
+        self.entry_manual_nacionalidade = ttk.Entry(form_container, textvariable=self.manual_nacionalidade_var, font=("Segoe UI", 10), width=25)
+        # criar também rótulo explícito (não gridado ainda)
+        self.lbl_manual_nacionalidade = tk.Label(form_container, text="Especificar Nacionalidade:", font=("Segoe UI", 10, "bold"), bg="white", fg="#4a5568")
+        # não grid ainda; será exibida quando necessário via _on_nacionalidade_change
+
 
         # Botões de ação
         btn_frame = tk.Frame(form_container, bg="white")
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=(25, 10))
+        # colocar os botões abaixo de todos os campos (usar 'line' para ficar abaixo da Quantidade)
+        btn_frame.grid(row=line, column=0, columnspan=2, pady=(25, 10))
 
         # Botão Guardar
-        btn_guardar = tk.Button(btn_frame, text="✓ Guardar Registo", 
+        btn_guardar = tk.Button(btn_frame, text="✓ Guardar Registo",
                                font=("Segoe UI", 11, "bold"),
                                bg="#48bb78", fg="white",
                                activebackground="#38a169",
@@ -415,13 +462,16 @@ class JanelaPrincipal:
         table_content.pack(expand=True, fill="both", padx=2, pady=2)
 
         # Treeview (registos do dia)
-        cols = ("data_hora", "assistente", "nacionalidade", "numero_bilhete", "metodo_pagamento", "fatura", "contribuinte")
+        cols = ("data_hora", "assistente", "nacionalidade", "numero_bilhete", "metodo_pagamento", "fatura", "contribuinte", "anotacoes")
         self.tree = ttk.Treeview(table_content, columns=cols, show="headings", height=15)
         
         # Configurar colunas
         for c in cols:
-            self.tree.heading(c, text=c.replace("_", " ").capitalize())
-            self.tree.column(c, width=120, anchor="center")
+            heading = c.replace("_", " ").capitalize()
+            self.tree.heading(c, text=heading)
+            # aumentar largura da coluna 'anotacoes'
+            col_width = 220 if c == 'anotacoes' else 120
+            self.tree.column(c, width=col_width, anchor="center")
         
         # Scrollbars
         v_scroll = ttk.Scrollbar(table_content, orient="vertical", command=self.tree.yview)
@@ -431,6 +481,9 @@ class JanelaPrincipal:
         self.tree.pack(side="left", fill="both", expand=True)
         v_scroll.pack(side="right", fill="y")
         h_scroll.pack(side="bottom", fill="x")
+
+    # Bind duplo-clique para mostrar detalhes (anotações completas)
+        self.tree.bind('<Double-1>', self._mostrar_detalhes)
 
         # Status bar
         status_bar = tk.Frame(self.root, bg="#e2e8f0", height=30)
@@ -476,6 +529,26 @@ class JanelaPrincipal:
 
         ttk.Button(popup, text="Confirmar", command=confirmar).pack(pady=(0, 10))
 
+    def _mostrar_detalhes(self, event=None):
+        # mostra um popup com os detalhes da linha (especialmente as anotações completas)
+        sel = self.tree.selection()
+        if not sel:
+            return
+        item = sel[0]
+        vals = self.tree.item(item, "values")
+        # assumimos que anotacoes é a última coluna
+        anot = vals[-1] if vals and len(vals) > 0 else ""
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Anotações")
+        popup.geometry("500x300")
+        popup.transient(self.root)
+        txt = scrolledtext.ScrolledText(popup, font=("Segoe UI", 10), wrap=tk.WORD)
+        txt.pack(expand=True, fill="both", padx=10, pady=10)
+        txt.insert("1.0", anot)
+        txt.config(state="disabled")
+        ttk.Button(popup, text="Fechar", command=popup.destroy).pack(pady=(0, 10))
+
     def _proximo_numero_bilhete(self):
         ultimo = self.db.ultimo_numero_bilhete()
         ano = datetime.now().year
@@ -487,12 +560,45 @@ class JanelaPrincipal:
             return n + 1
         return 1
 
+    def _on_nacionalidade_change(self, event=None):
+        try:
+            val = self.combo_nacionalidade.get()
+        except Exception:
+            return
+        # se selecionado 'Outros', mostrar entrada manual
+        if val and val.lower() == 'outros':
+            # inserir a entrada manual na linha definida
+            try:
+                # mostrar rótulo e entrada na mesma linha
+                self.lbl_manual_nacionalidade.grid(row=self._manual_row, column=0, sticky='w', pady=12, padx=(0, 10))
+                self.entry_manual_nacionalidade.grid(row=self._manual_row, column=1, sticky='ew', pady=12)
+            except Exception:
+                pass
+        else:
+            # esconder a entrada manual
+            try:
+                self.entry_manual_nacionalidade.grid_forget()
+                self.lbl_manual_nacionalidade.grid_forget()
+                self.manual_nacionalidade_var.set('')
+            except Exception:
+                pass
+
     def guardar_registo(self):
         if self.dia_fechado:
             messagebox.showwarning("Aviso", "O dia já está fechado! Não é possível registar bilhetes.")
             return
 
         nacionalidade = self.combo_nacionalidade.get()
+        # Se selecionado 'Outros', exigir valor manual e usá-lo
+        try:
+            if nacionalidade and nacionalidade.lower() == 'outros':
+                manual_val = self.manual_nacionalidade_var.get().strip()
+                if not manual_val:
+                    messagebox.showwarning("Aviso", "Por favor especifique a nacionalidade quando selecionar 'Outros'.")
+                    return
+                nacionalidade = manual_val
+        except Exception:
+            pass
         metodo_pagamento = self.combo_pagamento.get()
         fatura = self.combo_fatura.get()
         contribuinte = self.entry_contribuinte.get().strip() or None
@@ -504,6 +610,13 @@ class JanelaPrincipal:
             messagebox.showwarning("Aviso", "Quantidade inválida.")
             return
 
+        # ScrolledText: obter todo o texto (multi-linha)
+        try:
+            anotacoes = self.entry_anotacoes.get("1.0", "end").strip() or None
+        except Exception:
+            # se por alguma razão não for ScrolledText (compatibilidade), tentar Entry
+            anotacoes = getattr(self, 'entry_anotacoes').get().strip() or None
+
         proximo = self._proximo_numero_bilhete()
         ano = datetime.now().year
         data_hora = agora_str()
@@ -512,16 +625,31 @@ class JanelaPrincipal:
             for i in range(quantidade):
                 numero = f"IG{ano}-{proximo + i}"
                 bilhetes.append(numero)
-                self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte)
+                self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
         except Exception as e:
             messagebox.showerror("Erro", f"Erro ao guardar registo:\n{e}")
             return
 
         # limpar campos e atualizar
         self.combo_nacionalidade.set("Portuguesa")
+        # esconder/limpar entrada manual se visível
+        try:
+            self.entry_manual_nacionalidade.grid_forget()
+            self.manual_nacionalidade_var.set("")
+        except Exception:
+            pass
         self.combo_pagamento.set("Dinheiro")
         self.combo_fatura.set("Não")
         self.entry_contribuinte.delete(0, tk.END)
+        # limpar anotacoes
+        # limpar anotacoes (ScrolleText)
+        try:
+            self.entry_anotacoes.delete("1.0", tk.END)
+        except Exception:
+            try:
+                self.entry_anotacoes.delete(0, tk.END)
+            except Exception:
+                pass
         self.spin_quantidade.set(1)
 
         self.atualizar_tabela()
@@ -564,18 +692,49 @@ class JanelaPrincipal:
             return
         if not messagebox.askyesno("Fechar o Dia", "Tem a certeza que deseja fechar o dia?"):
             return
-        self.dia_fechado = True
-        # desativar inputs
-        for w in [self.combo_nacionalidade, self.combo_pagamento, self.combo_fatura,
-                  self.entry_contribuinte, self.spin_quantidade]:
+
+        # pedir anotações finais (opcional)
+        popup = tk.Toplevel(self.root)
+        popup.title("Anotações Finais (opcional)")
+        popup.geometry("500x300")
+        popup.transient(self.root)
+        popup.grab_set()
+        tk.Label(popup, text="Anotações finais (opcional):", font=("Segoe UI", 10, "bold")).pack(anchor='w', padx=10, pady=(10, 0))
+        txt_final = scrolledtext.ScrolledText(popup, font=("Segoe UI", 10), wrap=tk.WORD, height=10)
+        txt_final.pack(expand=True, fill='both', padx=10, pady=10)
+
+        def confirmar_fecho():
             try:
-                w.config(state="disabled")
+                self.final_notes = txt_final.get("1.0", "end").strip() or None
             except Exception:
-                pass
-        self.gerar_excel()
-        self.gerar_pdf()
-        self.criar_backup()
-        self._set_status("Dia fechado. Relatórios gerados.")
+                self.final_notes = None
+            popup.destroy()
+            # marcar dia fechado e seguir
+            self.dia_fechado = True
+            # desativar inputs
+            for w in [self.combo_nacionalidade, self.combo_pagamento, self.combo_fatura,
+                      self.entry_contribuinte, self.entry_anotacoes, self.entry_manual_nacionalidade, self.spin_quantidade, getattr(self, 'spin_nao_entraram', None)]:
+                try:
+                    w.config(state="disabled")
+                except Exception:
+                    pass
+            self.gerar_excel()
+            self.gerar_pdf()
+            self.criar_backup()
+            self._set_status("Dia fechado. Relatórios gerados.")
+
+        def cancelar_fecho():
+            popup.destroy()
+            return
+
+        btns = tk.Frame(popup)
+        btns.pack(pady=(0, 10))
+        ttk.Button(btns, text="Confirmar Fecho", command=confirmar_fecho).pack(side='left', padx=8)
+        ttk.Button(btns, text="Cancelar", command=cancelar_fecho).pack(side='left')
+        popup.wait_window()
+        # defensive default
+        if not hasattr(self, 'final_notes'):
+            self.final_notes = None
 
     # --------------------------
     # BACKUP E RELATÓRIOS
@@ -605,18 +764,55 @@ class JanelaPrincipal:
         wb = Workbook()
         ws = wb.active
         ws.title = "Bilhetes do Dia"
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Fatura", "Contribuinte"]
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Fatura", "Contribuinte", "Anotações"]
         ws.append(cabecalho)
         for col_num, _ in enumerate(cabecalho, 1):
             ws[f"{get_column_letter(col_num)}1"].font = Font(bold=True)
         for row in dados:
+            # row now includes anotacoes as last element
             ws.append([str(x) if x is not None else "" for x in row])
+        # aplicar wrap na coluna 'Anotações' (última coluna)
+        try:
+            anot_col = len(cabecalho)
+            for cell in ws[get_column_letter(anot_col)]:
+                cell.alignment = Alignment(wrap_text=True, vertical='top')
+        except Exception:
+            pass
         total = len(dados)
         ws.append([])
         ws.append(["Total de Bilhetes Vendidos:", total])
+        # incluir contador de pessoas que não entraram (se o widget existir)
+        try:
+            nao_entraram = int(self.spin_nao_entraram.get()) if hasattr(self, 'spin_nao_entraram') else 0
+            ws.append(["Não Entraram:", nao_entraram])
+        except Exception:
+            pass
+        # incluir anotações finais no Excel: uma linha após os totais e, opcionalmente, numa aba separada
+        try:
+            if hasattr(self, 'final_notes') and self.final_notes:
+                # adicionar linha simples abaixo
+                ws.append([])
+                ws.append(["Anotações Finais:", self.final_notes])
+                # criar página separada com notas (maior legibilidade)
+                notas_ws = wb.create_sheet(title="Notas Finais")
+                notas_ws.append(["Anotações Finais"])
+                # quebrar em linhas para inserir na sheet
+                for ln in (self.final_notes or '').split('\n'):
+                    notas_ws.append([ln])
+                # aplicar wrap na primeira coluna
+                for row in notas_ws.iter_rows(min_row=1, max_col=1):
+                    for cell in row:
+                        try:
+                            cell.alignment = Alignment(wrap_text=True, vertical='top')
+                        except Exception:
+                            pass
+        except Exception:
+            pass
         for col in ws.columns:
             max_len = max(len(str(c.value)) if c.value else 0 for c in col)
-            ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 5
+            # limitar largura máxima razoável
+            width = min(max_len + 5, 100)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = width
         filename = os.path.join(pasta, f"Bilhetes_{hoje}.xlsx")
         try:
             wb.save(filename)
@@ -632,15 +828,52 @@ class JanelaPrincipal:
         if not dados:
             messagebox.showinfo("Sem Dados", "Não existem registos para hoje.")
             return
+
         filename = os.path.join(pasta, f"Bilhetes_{hoje}.pdf")
         pdf = SimpleDocTemplate(filename, pagesize=A4)
         elementos = []
         styles = getSampleStyleSheet()
         elementos.append(Paragraph(f"<b>Relatório de Bilhetes - {hoje}</b>", styles["Title"]))
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Fatura", "Contribuinte"]
-        tabela_dados = [cabecalho] + [list(map(str, row)) for row in dados]
-        tabela_dados.append([])
-        tabela_dados.append(["Total de Bilhetes Vendidos:", len(dados)])
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Fatura", "Contribuinte", "Anotações"]
+        tabela_dados = [cabecalho]
+        for row in dados:
+            r = list(row)
+            try:
+                anot_text = str(r[-1]) if r[-1] is not None else ""
+            except Exception:
+                anot_text = ""
+            r[-1] = Paragraph(anot_text.replace('\n', '<br/>'), styles['BodyText'])
+            tabela_dados.append(r)
+
+        # Totais e summaries
+        total = len(dados)
+        empty_row = [""] * len(cabecalho)
+        row_total = [""] * len(cabecalho)
+        row_total[0] = "Total de Bilhetes Vendidos:"
+        row_total[1] = total
+        tabela_dados.append(empty_row)
+        tabela_dados.append(row_total)
+
+        # Não Entraram
+        try:
+            nao_entraram = int(self.spin_nao_entraram.get()) if hasattr(self, 'spin_nao_entraram') else 0
+            row_ne = [""] * len(cabecalho)
+            row_ne[0] = "Não Entraram:"
+            row_ne[1] = nao_entraram
+            tabela_dados.append(row_ne)
+        except Exception:
+            pass
+
+        # Anotações finais (se existirem)
+        try:
+            if hasattr(self, 'final_notes') and self.final_notes:
+                row_notes = [""] * len(cabecalho)
+                row_notes[0] = Paragraph(self.final_notes.replace('\n', '<br/>'), styles['BodyText'])
+                tabela_dados.append([""])  # spacer
+                tabela_dados.append(row_notes)
+        except Exception:
+            pass
+
         t = Table(tabela_dados, repeatRows=1)
         t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), colors.lightblue),
