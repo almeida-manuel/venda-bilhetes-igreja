@@ -12,6 +12,7 @@ from reportlab.lib.pagesizes import A4
 import shutil
 import os
 import sys
+import tkinter.font as tkfont
 
 # ==========================
 # UTILITÁRIOS
@@ -19,9 +20,41 @@ import sys
 def hoje_str():
     return datetime.now().strftime("%Y-%m-%d")
 
+# Accessibility: increase font sizes for better readability
+FONT_INCREASE = 2  # change this number to increase/decrease size
+def AF(size, *opts):
+    # returns a font tuple with increased size and any extra options (e.g., 'bold')
+    try:
+        sz = int(size) + FONT_INCREASE
+    except Exception:
+        sz = size
+    return ("Segoe UI", sz) + tuple(opts)
+
 
 def agora_str():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+# Increase common Tk named fonts for accessibility. Call after creating a Tk root.
+def adjust_fonts(delta=FONT_INCREASE):
+    names = [
+        "TkDefaultFont", "TkTextFont", "TkMenuFont", "TkHeadingFont",
+        "TkCaptionFont", "TkSmallCaptionFont", "TkIconFont", "TkTooltipFont"
+    ]
+    for n in names:
+        try:
+            f = tkfont.nametofont(n)
+            # some fonts report negative sizes on Windows; handle gracefully
+            try:
+                current = int(f['size'])
+            except Exception:
+                current = f['size']
+            try:
+                f.configure(size=current + delta)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
 
 # ==========================
@@ -110,6 +143,8 @@ class DatabaseManager:
 class JanelaLogin:
     def __init__(self):
         self.login = tk.Tk()
+        # aplicar ajuste de fontes para acessibilidade
+        adjust_fonts()
         self.login.title("Login de Assistente")
         self.login.geometry("400x320")
         self.login.resizable(False, False)
@@ -198,6 +233,8 @@ class JanelaPrincipal:
 
         # Janela principal
         self.root = tk.Tk()
+        # aplicar ajuste de fontes para acessibilidade
+        adjust_fonts()
         self.root.title(f"Venda de Bilhetes - Assistente: {self.assistente}")
         self.root.geometry("1200x750")
         self.root.resizable(True, True)
@@ -228,28 +265,28 @@ class JanelaPrincipal:
         header_content = tk.Frame(header, bg="#2d3748")
         header_content.pack(expand=True, fill="both", padx=30)
 
-        tk.Label(header_content, text="Sistema de Venda de Bilhetes", 
-                font=("Segoe UI", 16, "bold"), bg="#2d3748", fg="white").pack(side="left")
-        
+        tk.Label(header_content, text="Sistema de Venda de Bilhetes",
+                 font=AF(16, "bold"), bg="#2d3748", fg="white").pack(side="left")
+
         user_frame = tk.Frame(header_content, bg="#2d3748")
         user_frame.pack(side="right")
-        
-        tk.Label(user_frame, text="Assistente:", font=("Segoe UI", 10), 
-                bg="#2d3748", fg="#cbd5e0").pack(side="left")
-        self.lbl_assistente = tk.Label(user_frame, text=self.assistente, 
-                                      font=("Segoe UI", 10, "bold"), 
+
+        tk.Label(user_frame, text="Assistente:", font=AF(10),
+                 bg="#2d3748", fg="#cbd5e0").pack(side="left")
+        self.lbl_assistente = tk.Label(user_frame, text=self.assistente,
+                                      font=AF(10, "bold"),
                                       bg="#2d3748", fg="white")
         self.lbl_assistente.pack(side="left", padx=(5, 15))
-        
+
         # Botão trocar assistente com estilo moderno
-        btn_trocar = tk.Button(user_frame, text="Trocar Assistente", 
-                              font=("Segoe UI", 9),
-                              bg="#4a5568", fg="white",
-                              activebackground="#718096",
-                              activeforeground="white",
-                              relief="flat",
-                              padx=12, pady=4,
-                              command=self._popup_trocar_assistente)
+        btn_trocar = tk.Button(user_frame, text="Trocar Assistente",
+                               font=AF(9),
+                               bg="#4a5568", fg="white",
+                               activebackground="#718096",
+                               activeforeground="white",
+                               relief="flat",
+                               padx=12, pady=4,
+                               command=self._popup_trocar_assistente)
         btn_trocar.pack(side="left")
 
         # Container principal
@@ -264,8 +301,7 @@ class JanelaPrincipal:
         panel_title = tk.Frame(left_panel, bg="#4299e1", height=40)
         panel_title.pack(fill="x", side="top")
         panel_title.pack_propagate(False)
-        tk.Label(panel_title, text="Nova Venda", font=("Segoe UI", 12, "bold"), 
-                bg="#4299e1", fg="white").pack(expand=True)
+        tk.Label(panel_title, text="Nova Venda", font=AF(12, "bold"), bg="#4299e1", fg="white").pack(expand=True)
 
         # Form container
         form_container = tk.Frame(left_panel, bg="white", padx=20, pady=20)
@@ -276,28 +312,24 @@ class JanelaPrincipal:
             ("Nacionalidade:", "combo_nacionalidade"),
             ("Método de Pagamento:", "combo_pagamento"),
             ("Fatura:", "combo_fatura"),
-            ("Nº Contribuinte (opcional):", "entry_contribuinte"),
             ("Anotações (opcional):", "entry_anotacoes"),
             ("Quantidade:", "spin_quantidade"),
             ("Não Entraram:", "spin_nao_entraram")
         ]
 
         nacionalidades = [
-            "Portuguesa", "Brasileira", "Espanhola", "Francesa", "Alemã", "Italiana",
-            "Inglesa", "Asiática", "Africana", "Outros"
+            "Português", "Brasileiro", "Espanhol", "Inglês", "Francês", "Italiano", "Asiático", "Alemão", "Outros"
         ]
 
         # usamos um contador de linhas para poder inserir a entrada manual logo abaixo do combo de nacionalidade
         line = 0
         for label, field_type in fields:
-            tk.Label(form_container, text=label, font=("Segoe UI", 10, "bold"), 
-                    bg="white", fg="#4a5568").grid(row=line, column=0, sticky="w", pady=12, padx=(0, 10))
+            tk.Label(form_container, text=label, font=AF(10, "bold"), bg="white", fg="#4a5568").grid(row=line, column=0, sticky="w", pady=12, padx=(0, 10))
 
             if "combo" in field_type:
                 values = nacionalidades if "nacionalidade" in field_type else ["Dinheiro", "Cartão"] if "pagamento" in field_type else ["Sim", "Não"]
-                default = "Portuguesa" if "nacionalidade" in field_type else "Dinheiro" if "pagamento" in field_type else "Não"
-                combo = ttk.Combobox(form_container, values=values, state="readonly", 
-                                   font=("Segoe UI", 10), width=22)
+                default = "Português" if "nacionalidade" in field_type else "Dinheiro" if "pagamento" in field_type else "Não"
+                combo = ttk.Combobox(form_container, values=values, state="readonly", font=AF(10), width=22)
                 combo.set(default)
                 combo.grid(row=line, column=1, sticky="ew", pady=12)
                 setattr(self, field_type, combo)
@@ -308,19 +340,24 @@ class JanelaPrincipal:
                     combo.bind('<<ComboboxSelected>>', lambda e: self._on_nacionalidade_change(e))
                     # reservar linha para a entrada manual (não inserida ainda)
                     line += 1
+                # Se este for o combo de fatura, reservar linha para o Nº Contribuinte
+                if "fatura" in field_type:
+                    self._contrib_row = line + 1
+                    combo.bind('<<ComboboxSelected>>', lambda e: self._on_fatura_change(e))
+                    # reservar linha para a entrada de contribuinte
+                    line += 1
             elif "entry" in field_type:
                 # Campo de anotações: usar um widget multi-linha (ScrolledText)
                 if "anotacoes" in field_type:
-                    txt = scrolledtext.ScrolledText(form_container, font=("Segoe UI", 10), width=36, height=4, wrap=tk.WORD)
+                    txt = scrolledtext.ScrolledText(form_container, font=AF(10), width=36, height=4, wrap=tk.WORD)
                     txt.grid(row=line, column=1, sticky="ew", pady=12)
                     setattr(self, field_type, txt)
                 else:
-                    entry = ttk.Entry(form_container, font=("Segoe UI", 10), width=25)
+                    entry = ttk.Entry(form_container, font=AF(10), width=25)
                     entry.grid(row=line, column=1, sticky="ew", pady=12)
                     setattr(self, field_type, entry)
             elif "spin" in field_type:
-                spin = ttk.Spinbox(form_container, from_=1, to=50, width=10, 
-                                 font=("Segoe UI", 10))
+                spin = ttk.Spinbox(form_container, from_=1, to=50, width=10, font=AF(10))
                 # por padrão, 0 pessoas não entraram
                 if 'nao_entraram' in field_type:
                     spin.set(0)
@@ -334,10 +371,15 @@ class JanelaPrincipal:
 
         # criar placeholder para entrada manual (inicialmente escondido)
         self.manual_nacionalidade_var = tk.StringVar()
-        self.entry_manual_nacionalidade = ttk.Entry(form_container, textvariable=self.manual_nacionalidade_var, font=("Segoe UI", 10), width=25)
+        self.entry_manual_nacionalidade = ttk.Entry(form_container, textvariable=self.manual_nacionalidade_var, font=AF(10), width=25)
         # criar também rótulo explícito (não gridado ainda)
-        self.lbl_manual_nacionalidade = tk.Label(form_container, text="Especificar Nacionalidade:", font=("Segoe UI", 10, "bold"), bg="white", fg="#4a5568")
+        self.lbl_manual_nacionalidade = tk.Label(form_container, text="Especificar Nacionalidade:", font=AF(10, "bold"), bg="white", fg="#4a5568")
         # não grid ainda; será exibida quando necessário via _on_nacionalidade_change
+
+        # placeholder para contribuinte (aparece apenas se Fatura == 'Sim')
+        self.contribuinte_var = tk.StringVar()
+        self.entry_contribuinte = ttk.Entry(form_container, textvariable=self.contribuinte_var, font=AF(10), width=25)
+        self.lbl_contribuinte = tk.Label(form_container, text="Nº Contribuinte:", font=AF(10, "bold"), bg="white", fg="#4a5568")
 
 
         # Botões de ação
@@ -347,7 +389,7 @@ class JanelaPrincipal:
 
         # Botão Guardar
         btn_guardar = tk.Button(btn_frame, text="✓ Guardar Registo",
-                               font=("Segoe UI", 11, "bold"),
+                               font=AF(11, "bold"),
                                bg="#48bb78", fg="white",
                                activebackground="#38a169",
                                activeforeground="white",
@@ -357,8 +399,8 @@ class JanelaPrincipal:
         btn_guardar.pack(side="left", padx=(0, 10))
 
         # Botão Fechar Dia
-        btn_fechar = tk.Button(btn_frame, text="📊 Fechar o Dia", 
-                              font=("Segoe UI", 11, "bold"),
+        btn_fechar = tk.Button(btn_frame, text="📊 Fechar o Dia",
+                              font=AF(11, "bold"),
                               bg="#ed8936", fg="white",
                               activebackground="#dd6b20",
                               activeforeground="white",
@@ -378,25 +420,21 @@ class JanelaPrincipal:
         stats_title = tk.Frame(stats_frame, bg="#38a169", height=40)
         stats_title.pack(fill="x", side="top")
         stats_title.pack_propagate(False)
-        tk.Label(stats_title, text="Estatísticas do Dia", font=("Segoe UI", 12, "bold"), 
-                bg="#38a169", fg="white").pack(expand=True)
+        tk.Label(stats_title, text="Estatísticas do Dia", font=AF(12, "bold"), bg="#38a169", fg="white").pack(expand=True)
 
         stats_content = tk.Frame(stats_frame, bg="white", padx=20, pady=15)
         stats_content.pack(expand=True, fill="both")
 
-        self.lbl_total_today = tk.Label(stats_content, text="Total de bilhetes hoje: 0", 
-                                       font=("Segoe UI", 12, "bold"), bg="white", fg="#2d3748")
+        self.lbl_total_today = tk.Label(stats_content, text="Total de bilhetes hoje: 0", font=AF(12, "bold"), bg="white", fg="#2d3748")
         self.lbl_total_today.pack(anchor="w", pady=(0, 15))
 
         # Tabela de nacionalidades
         nat_frame = tk.Frame(stats_content, bg="white")
         nat_frame.pack(fill="both", expand=True)
 
-        tk.Label(nat_frame, text="Distribuição por Nacionalidade:", 
-                font=("Segoe UI", 10, "bold"), bg="white", fg="#4a5568").pack(anchor="w")
+        tk.Label(nat_frame, text="Distribuição por Nacionalidade:", font=AF(10, "bold"), bg="white", fg="#4a5568").pack(anchor="w")
 
-        self.lst_nacionalidades = ttk.Treeview(nat_frame, columns=("nacionalidade", "count"), 
-                                              show="headings", height=8)
+        self.lst_nacionalidades = ttk.Treeview(nat_frame, columns=("nacionalidade", "count"), show="headings", height=8)
         self.lst_nacionalidades.heading("nacionalidade", text="Nacionalidade")
         self.lst_nacionalidades.heading("count", text="Total")
         self.lst_nacionalidades.column("nacionalidade", width=180)
@@ -416,20 +454,18 @@ class JanelaPrincipal:
         search_content = tk.Frame(search_frame, bg="white", padx=20, pady=15)
         search_content.pack(expand=True, fill="both")
 
-        tk.Label(search_content, text="Pesquisar Bilhetes", font=("Segoe UI", 11, "bold"), 
-                bg="white", fg="#4a5568").pack(anchor="w", pady=(0, 10))
+        tk.Label(search_content, text="Pesquisar Bilhetes", font=AF(11, "bold"), bg="white", fg="#4a5568").pack(anchor="w", pady=(0, 10))
 
         search_controls = tk.Frame(search_content, bg="white")
         search_controls.pack(fill="x")
 
-        tk.Label(search_controls, text="Nº do bilhete:", font=("Segoe UI", 10), 
-                bg="white", fg="#4a5568").pack(side="left")
+        tk.Label(search_controls, text="Nº do bilhete:", font=AF(10), bg="white", fg="#4a5568").pack(side="left")
 
-        self.entry_search = ttk.Entry(search_controls, font=("Segoe UI", 10), width=20)
+        self.entry_search = ttk.Entry(search_controls, font=AF(10), width=20)
         self.entry_search.pack(side="left", padx=8)
 
-        btn_pesquisar = tk.Button(search_controls, text="🔍 Pesquisar", 
-                                 font=("Segoe UI", 9),
+        btn_pesquisar = tk.Button(search_controls, text="🔍 Pesquisar",
+                                 font=AF(9),
                                  bg="#4299e1", fg="white",
                                  activebackground="#3182ce",
                                  activeforeground="white",
@@ -438,8 +474,8 @@ class JanelaPrincipal:
                                  command=self.pesquisar_bilhete)
         btn_pesquisar.pack(side="left", padx=(5, 10))
 
-        btn_limpar = tk.Button(search_controls, text="Limpar Filtro", 
-                              font=("Segoe UI", 9),
+        btn_limpar = tk.Button(search_controls, text="Limpar Filtro",
+                              font=AF(9),
                               bg="#a0aec0", fg="white",
                               activebackground="#718096",
                               activeforeground="white",
@@ -455,8 +491,7 @@ class JanelaPrincipal:
         table_title = tk.Frame(table_frame, bg="#4a5568", height=40)
         table_title.pack(fill="x", side="top")
         table_title.pack_propagate(False)
-        tk.Label(table_title, text="Registos de Hoje", font=("Segoe UI", 12, "bold"), 
-                bg="#4a5568", fg="white").pack(expand=True)
+        tk.Label(table_title, text="Registos de Hoje", font=AF(12, "bold"), bg="#4a5568", fg="white").pack(expand=True)
 
         table_content = tk.Frame(table_frame, bg="white")
         table_content.pack(expand=True, fill="both", padx=2, pady=2)
@@ -482,7 +517,7 @@ class JanelaPrincipal:
         v_scroll.pack(side="right", fill="y")
         h_scroll.pack(side="bottom", fill="x")
 
-    # Bind duplo-clique para mostrar detalhes (anotações completas)
+        # Bind duplo-clique para mostrar detalhes (anotações completas)
         self.tree.bind('<Double-1>', self._mostrar_detalhes)
 
         # Status bar
@@ -492,8 +527,7 @@ class JanelaPrincipal:
         
         self.status_var = tk.StringVar()
         self.status_var.set("Sistema pronto - Aguardando ações")
-        status_label = tk.Label(status_bar, textvariable=self.status_var, 
-                               font=("Segoe UI", 9), bg="#e2e8f0", fg="#4a5568")
+        status_label = tk.Label(status_bar, textvariable=self.status_var, font=AF(9), bg="#e2e8f0", fg="#4a5568")
         status_label.pack(side="left", padx=15)
 
     # --------------------------
@@ -583,6 +617,25 @@ class JanelaPrincipal:
             except Exception:
                 pass
 
+    def _on_fatura_change(self, event=None):
+        try:
+            val = self.combo_fatura.get()
+        except Exception:
+            return
+        if val and val.lower() == 'sim':
+            try:
+                self.lbl_contribuinte.grid(row=self._contrib_row, column=0, sticky='w', pady=12, padx=(0, 10))
+                self.entry_contribuinte.grid(row=self._contrib_row, column=1, sticky='ew', pady=12)
+            except Exception:
+                pass
+        else:
+            try:
+                self.entry_contribuinte.grid_forget()
+                self.lbl_contribuinte.grid_forget()
+                self.contribuinte_var.set('')
+            except Exception:
+                pass
+
     def guardar_registo(self):
         if self.dia_fechado:
             messagebox.showwarning("Aviso", "O dia já está fechado! Não é possível registar bilhetes.")
@@ -601,7 +654,19 @@ class JanelaPrincipal:
             pass
         metodo_pagamento = self.combo_pagamento.get()
         fatura = self.combo_fatura.get()
-        contribuinte = self.entry_contribuinte.get().strip() or None
+        # contribuinte is required when fatura == 'Sim'
+        contribuinte = None
+        try:
+            if fatura and fatura.lower() == 'sim':
+                contribuinte = self.contribuinte_var.get().strip()
+                if not contribuinte:
+                    messagebox.showwarning("Aviso", "Por favor insira o Nº Contribuinte quando selecionar 'Sim' em Fatura.")
+                    return
+            else:
+                # ensure empty when not required
+                contribuinte = None
+        except Exception:
+            contribuinte = None
         try:
             quantidade = int(self.spin_quantidade.get())
             if quantidade <= 0:
@@ -631,7 +696,7 @@ class JanelaPrincipal:
             return
 
         # limpar campos e atualizar
-        self.combo_nacionalidade.set("Portuguesa")
+        self.combo_nacionalidade.set("Português")
         # esconder/limpar entrada manual se visível
         try:
             self.entry_manual_nacionalidade.grid_forget()
