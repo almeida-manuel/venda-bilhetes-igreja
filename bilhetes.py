@@ -5,14 +5,124 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
-from reportlab.lib import colors
-from reportlab.platypus import Table, TableStyle, SimpleDocTemplate, Paragraph
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import A4
 import shutil
 import os
 import sys
 import tkinter.font as tkfont
+
+# --- Impressão térmica (Windows, impressora USB comum) ---
+try:
+    import win32print
+    import win32ui
+    from PIL import Image, ImageWin
+    WIN32_AVAILABLE = True
+except Exception:
+    WIN32_AVAILABLE = False
+
+# Imports opcionais para geração de PDF (reportlab). Se não estiverem presentes,
+# funções PDF deverão falhar com uma mensagem amigável.
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Table
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus.tables import TableStyle
+    from reportlab.lib import colors
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    REPORTLAB_AVAILABLE = False
+
+
+def _get_default_printer_name():
+    """Retorna o nome da impressora por omissão (Windows) ou None."""
+    if not WIN32_AVAILABLE:
+        return None
+    try:
+        return win32print.GetDefaultPrinter()
+    except Exception:
+        return None
+
+
+def _send_raw_to_printer(printer_name, data_bytes):
+    """Envia bytes raw para a impressora através da API win32print.
+
+    Lança exceções em caso de falha.
+    """
+    if not WIN32_AVAILABLE:
+        raise RuntimeError("pywin32 não está disponível no ambiente.")
+    if not printer_name:
+        raise ValueError("Nome da impressora não fornecido.")
+    # Abrir impressora e enviar trabalho RAW
+    hPrinter = None
+    try:
+        hPrinter = win32print.OpenPrinter(printer_name)
+        # StartDocPrinter espera uma tupla (pDocument, pOutputFile, pDatatype)
+        # usar RAW para enviar comandos ESC/POS
+        win32print.StartDocPrinter(hPrinter, 1, ("Bilhete", None, "RAW"))
+        win32print.StartPagePrinter(hPrinter)
+        win32print.WritePrinter(hPrinter, data_bytes)
+        win32print.EndPagePrinter(hPrinter)
+        win32print.EndDocPrinter(hPrinter)
+    finally:
+        try:
+            if hPrinter:
+                win32print.ClosePrinter(hPrinter)
+        except Exception:
+            pass
+
+
+def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=None):
+    """Formata e imprime um bilhete na impressora térmica (ESC/POS).
+
+    Parâmetros:
+    - numero_bilhete: string, ex: 'IG2025-12'
+    - data_hora: string representando data e hora
+    - assistente: nome do assistente
+    - printer_name: opcional nome da impressora; se None, usa a impressora por omissão do Windows
+
+    Observações:
+    - Requer 'pywin32' instalado para enviar dados brutos ao driver do Windows.
+    - Usa encoding cp1252 para suportar acentuação básica em português.
+    """
+    if not WIN32_AVAILABLE:
+        # informar via mensagem gráfica quando possível
+        try:
+            messagebox.showwarning("Impressão Indisponível", "PyWin32 não está instalado. Instale com: pip install pywin32")
+        except Exception:
+            print("PyWin32 não está instalado. Instale com: pip install pywin32")
+        return
+
+    if not printer_name:
+        printer_name = _get_default_printer_name()
+
+    if not printer_name:
+        raise RuntimeError("Não foi possível determinar a impressora por omissão. Especifique 'printer_name'.")
+
+    # Comandos ESC/POS básicos
+    ESC = b'\x1b'
+    GS = b'\x1d'
+    LF = b'\n'
+
+    parts = []
+    parts.append(ESC + b'@')                  # Inicializa
+    parts.append(ESC + b'a' + b'\x01')       # Centraliza
+    parts.append(GS + b'!'+ b'\x11')         # Fonte dupla (width+height)
+    parts.append(f"BILHETE\n".upper().encode('cp1252', 'replace'))
+    parts.append(LF)
+    parts.append(GS + b'!'+ b'\x00')         # volta ao normal
+    parts.append(ESC + b'E' + b'\x01')       # Negrito on
+    parts.append(f"{numero_bilhete}\n".encode('cp1252', 'replace'))
+    parts.append(ESC + b'E' + b'\x00')       # Negrito off
+    parts.append(LF)
+    parts.append(f"{data_hora}\n".encode('cp1252', 'replace'))
+    parts.append(f"Assistente: {assistente}\n".encode('cp1252', 'replace'))
+    parts.append(LF*3)
+    # Comando de corte (algumas impressoras suportam different modes)
+    parts.append(GS + b'V' + b'\x00')
+
+    data = b''.join(parts)
+
+    # Enviar para a impressora
+    _send_raw_to_printer(printer_name, data)
 
 # ==========================
 # UTILITÁRIOS
@@ -721,6 +831,17 @@ class JanelaPrincipal:
         self._atualizar_status()
         messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
         self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
+        # Após gravar, tentar imprimir cada bilhete
+        try:
+            for numero in bilhetes:
+                try:
+                    imprimir_bilhete_termo(numero, data_hora, self.assistente)
+                except Exception as e:
+                    # não interromper o fluxo por causa de falha numa impressão
+                    print(f"Erro ao imprimir {numero}: {e}")
+        except Exception:
+            pass
+
 
     def atualizar_tabela(self):
         # refresh table with today's data
@@ -784,7 +905,6 @@ class JanelaPrincipal:
                 except Exception:
                     pass
             self.gerar_excel()
-            self.gerar_pdf()
             self.criar_backup()
             self._set_status("Dia fechado. Relatórios gerados.")
 
@@ -887,6 +1007,9 @@ class JanelaPrincipal:
 
     def gerar_pdf(self):
         hoje = hoje_str()
+        if not REPORTLAB_AVAILABLE:
+            messagebox.showwarning("Dependência em falta", "A biblioteca 'reportlab' não está instalada. Instale com: pip install reportlab")
+            return
         pasta = os.path.join("relatorios", hoje)
         os.makedirs(pasta, exist_ok=True)
         dados = self.db.obter_registos_do_dia()
