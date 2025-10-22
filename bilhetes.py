@@ -71,20 +71,12 @@ def _send_raw_to_printer(printer_name, data_bytes):
 
 
 def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=None):
-    """Formata e imprime um bilhete na impressora térmica (ESC/POS).
+    """Formata e imprime um bilhete compacto na impressora térmica (ESC/POS).
 
-    Parâmetros:
-    - numero_bilhete: string, ex: 'IG2025-12'
-    - data_hora: string representando data e hora
-    - assistente: nome do assistente
-    - printer_name: opcional nome da impressora; se None, usa a impressora por omissão do Windows
-
-    Observações:
-    - Requer 'pywin32' instalado para enviar dados brutos ao driver do Windows.
-    - Usa encoding cp1252 para suportar acentuação básica em português.
+    Saída: título da igreja e apenas número do bilhete + data/hora de venda.
+    Mantém assinatura compatível com chamadas existentes (param 'assistente' é ignorado).
     """
     if not WIN32_AVAILABLE:
-        # informar via mensagem gráfica quando possível
         try:
             messagebox.showwarning("Impressão Indisponível", "PyWin32 não está instalado. Instale com: pip install pywin32")
         except Exception:
@@ -97,31 +89,33 @@ def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=N
     if not printer_name:
         raise RuntimeError("Não foi possível determinar a impressora por omissão. Especifique 'printer_name'.")
 
-    # Comandos ESC/POS básicos
+    # ESC/POS commands
     ESC = b'\x1b'
     GS = b'\x1d'
     LF = b'\n'
 
     parts = []
-    parts.append(ESC + b'@')                  # Inicializa
-    parts.append(ESC + b'a' + b'\x01')       # Centraliza
-    parts.append(GS + b'!'+ b'\x11')         # Fonte dupla (width+height)
-    parts.append(f"BILHETE\n".upper().encode('cp1252', 'replace'))
+    parts.append(ESC + b'@')                    # Inicializa
+    parts.append(ESC + b'a' + b'\x01')         # Centraliza
+    parts.append(GS + b'!'+ b'\x11')           # Fonte grande
+    # Título: Igreja e identificação (apenas título)
+    titulo = "BILHETE\nIGREJA NOSSA SENHORA DA OLIVEIRA\n"
+    parts.append(titulo.encode('cp1252', 'replace'))
     parts.append(LF)
-    parts.append(GS + b'!'+ b'\x00')         # volta ao normal
-    parts.append(ESC + b'E' + b'\x01')       # Negrito on
-    parts.append(f"{numero_bilhete}\n".encode('cp1252', 'replace'))
-    parts.append(ESC + b'E' + b'\x00')       # Negrito off
-    parts.append(LF)
-    parts.append(f"{data_hora}\n".encode('cp1252', 'replace'))
-    parts.append(f"Assistente: {assistente}\n".encode('cp1252', 'replace'))
+    parts.append(GS + b'!'+ b'\x00')           # volta ao normal
+
+    # Apenas número do bilhete e data/hora
+    parts.append(ESC + b'E' + b'\x01')        # Negrito on
+    parts.append(f"Nº: {numero_bilhete}\n".encode('cp1252', 'replace'))
+    parts.append(ESC + b'E' + b'\x00')        # Negrito off
+    parts.append(f"Data/Hora: {data_hora}\n".encode('cp1252', 'replace'))
     parts.append(LF*3)
-    # Comando de corte (algumas impressoras suportam different modes)
+
+    # Corte de papel
     parts.append(GS + b'V' + b'\x00')
 
     data = b''.join(parts)
 
-    # Enviar para a impressora
     _send_raw_to_printer(printer_name, data)
 
 # ==========================
