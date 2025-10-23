@@ -71,52 +71,171 @@ def _send_raw_to_printer(printer_name, data_bytes):
 
 
 def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=None):
-    """Formata e imprime um bilhete compacto na impressora térmica (ESC/POS).
-
-    Saída: título da igreja e apenas número do bilhete + data/hora de venda.
-    Mantém assinatura compatível com chamadas existentes (param 'assistente' é ignorado).
+    """Gera PDF 80mm: título, nº do bilhete, data/hora e logo.png imediatamente após a data.
+    Mantém altura dinâmica entre 100–120 mm; tudo numa única página.
     """
-    if not WIN32_AVAILABLE:
+    if not REPORTLAB_AVAILABLE:
         try:
-            messagebox.showwarning("Impressão Indisponível", "PyWin32 não está instalado. Instale com: pip install pywin32")
+            messagebox.showwarning(
+                "Dependência em Falta",
+                "A biblioteca 'reportlab' não está instalada. Instale com: pip install reportlab"
+            )
         except Exception:
-            print("PyWin32 não está instalado. Instale com: pip install pywin32")
+            print("A biblioteca 'reportlab' não está instalada. Instale com: pip install reportlab")
         return
 
-    if not printer_name:
-        printer_name = _get_default_printer_name()
+    try:
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Image, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.utils import ImageReader
+    except Exception:
+        try:
+            messagebox.showwarning("Dependência em Falta", "Falha ao carregar módulos do reportlab.")
+        except Exception:
+            print("Falha ao carregar módulos do reportlab.")
+        return
 
-    if not printer_name:
-        raise RuntimeError("Não foi possível determinar a impressora por omissão. Especifique 'printer_name'.")
+    import tempfile
+    import time
+    import webbrowser
 
-    # ESC/POS commands
-    ESC = b'\x1b'
-    GS = b'\x1d'
-    LF = b'\n'
+    # Página: largura fixa 80 mm, altura dinâmica entre 100 e 120 mm
+    WIDTH_MM = 80
+    MIN_HEIGHT_MM = 100
+    MAX_HEIGHT_MM = 120
+    MARGIN_MM = 5
 
-    parts = []
-    parts.append(ESC + b'@')                    # Inicializa
-    parts.append(ESC + b'a' + b'\x01')         # Centraliza
-    parts.append(GS + b'!'+ b'\x11')           # Fonte grande
-    # Título: Igreja e identificação (apenas título)
-    titulo = "BILHETE\nIGREJA NOSSA SENHORA DA OLIVEIRA\n"
-    parts.append(titulo.encode('cp1252', 'replace'))
-    parts.append(LF)
-    parts.append(GS + b'!'+ b'\x00')           # volta ao normal
+    width_pt = WIDTH_MM * mm
+    margin_pt = MARGIN_MM * mm
+    content_width_pt = width_pt - 2 * margin_pt
 
-    # Apenas número do bilhete e data/hora
-    parts.append(ESC + b'E' + b'\x01')        # Negrito on
-    parts.append(f"Nº: {numero_bilhete}\n".encode('cp1252', 'replace'))
-    parts.append(ESC + b'E' + b'\x00')        # Negrito off
-    parts.append(f"Data/Hora: {data_hora}\n".encode('cp1252', 'replace'))
-    parts.append(LF*3)
+    # estilos com leading reduzido
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Normal'],
+                                 fontName='Helvetica-Bold', fontSize=12, alignment=TA_CENTER, leading=13)
+    small_style = ParagraphStyle('Small', parent=styles['Normal'],
+                                 fontName='Helvetica', fontSize=10, alignment=TA_CENTER, leading=11)
 
-    # Corte de papel
-    parts.append(GS + b'V' + b'\x00')
+    # conteúdo
+    titulo_text = "Bilhete igreja Nossa Senhora da Oliveira"
+    numero_text = f"Nº: {numero_bilhete}"
+    data_text = f"Data/Hora: {data_hora}"
 
-    data = b''.join(parts)
+    # preparar logo (se existir)
+    base_dir = os.path.dirname(__file__)
+    logo_path = os.path.join(base_dir, "logo.png")
+    logo_w_pt = 0
+    logo_h_pt = 0
+    logo_exists = False
+    if os.path.exists(logo_path):
+        try:
+            ir = ImageReader(logo_path)
+            iw, ih = ir.getSize()
+            if iw > 0:
+                # usar 100% da largura de conteúdo (content_width_pt) — ocupar toda a largura disponível
+                logo_w_pt = content_width_pt
+                logo_h_pt = logo_w_pt * (ih / float(iw))
+                logo_exists = True
+        except Exception as e:
+            print("Aviso: falha ao ler logo.png:", e)
+            logo_exists = False
 
-    _send_raw_to_printer(printer_name, data)
+    # estimativa de altura textual (título + nº + data)
+    text_height_pt = title_style.fontSize * 1.1 + small_style.fontSize * 1.05 * 2
+    # espaçamentos reduzidos
+    small_spacing = 2 * mm
+    spacing_after_text = 1 * mm  # pequeno espaço entre data e logo
+
+    # calcular altura total necessária (agora logo vem logo após a data)
+    images_height_pt = logo_h_pt if logo_exists else 0
+    total_needed_pt = margin_pt + text_height_pt + small_spacing + spacing_after_text + images_height_pt + margin_pt
+
+    # limitar altura entre MIN e MAX e, se necessário, reduzir logo para caber
+    max_height_pt = MAX_HEIGHT_MM * mm
+    min_height_pt = MIN_HEIGHT_MM * mm
+
+    if total_needed_pt > max_height_pt and images_height_pt > 0:
+        available_for_images = max_height_pt - (margin_pt + text_height_pt + small_spacing + spacing_after_text + margin_pt)
+        if available_for_images <= 0:
+            # não há espaço para a imagem -> remover imagem
+            logo_exists = False
+            logo_w_pt = logo_h_pt = 0
+            images_height_pt = 0
+        else:
+            scale = available_for_images / images_height_pt
+            logo_w_pt *= scale
+            logo_h_pt *= scale
+            images_height_pt = logo_h_pt
+        total_needed_pt = margin_pt + text_height_pt + small_spacing + spacing_after_text + images_height_pt + margin_pt
+
+    total_mm = total_needed_pt / mm
+    if total_mm < MIN_HEIGHT_MM:
+        total_mm = MIN_HEIGHT_MM
+    elif total_mm > MAX_HEIGHT_MM:
+        total_mm = MAX_HEIGHT_MM
+    height_pt = total_mm * mm
+
+    # criar pdf temporário
+    tmpdir = tempfile.gettempdir()
+    filename = os.path.join(tmpdir, f"bilhete_{numero_bilhete}_{int(time.time())}.pdf")
+
+    # montar story: título + pequeno espaço + número + data + pequeno espaço + logo (imediatamente após a data)
+    story = []
+    story.append(Paragraph(titulo_text, title_style))
+    story.append(Spacer(1, small_spacing))
+    story.append(Paragraph(numero_text, small_style))
+    story.append(Spacer(1, 1 * mm))
+    story.append(Paragraph(data_text, small_style))
+    story.append(Spacer(1, spacing_after_text))
+
+    # inserir logo imediatamente após a data (se existir)
+    if logo_exists and logo_h_pt > 0:
+        try:
+            logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
+            logo_img.hAlign = 'CENTER'
+            story.append(logo_img)
+        except Exception as e:
+            print("Aviso: falha ao inserir logo no PDF:", e)
+
+    # gerar pdf
+    doc = SimpleDocTemplate(filename, pagesize=(width_pt, height_pt),
+                            leftMargin=margin_pt, rightMargin=margin_pt,
+                            topMargin=margin_pt, bottomMargin=margin_pt)
+    try:
+        doc.build(story)
+    except Exception as e:
+        try:
+            messagebox.showerror("Erro PDF", f"Falha ao criar PDF do bilhete:\n{e}")
+        except Exception:
+            print("Falha ao criar PDF do bilhete:", e)
+        return
+
+    # imprimir usando impressora predefinida do sistema (Windows preferencialmente)
+    try:
+        if sys.platform.startswith("win") and WIN32_AVAILABLE:
+            try:
+                import win32api
+                win32api.ShellExecute(0, "print", filename, None, ".", 0)
+            except Exception:
+                try:
+                    os.startfile(filename, "print")
+                except Exception:
+                    webbrowser.open(filename)
+        else:
+            try:
+                os.startfile(filename, "print")
+            except Exception:
+                try:
+                    webbrowser.open(filename)
+                except Exception:
+                    pass
+    except Exception as e:
+        try:
+            messagebox.showinfo("PDF Gerado", f"Bilhete gerado em:\n{filename}\nImpressão automática falhou: {e}")
+        except Exception:
+            print("Bilhete gerado em:", filename, "Impressão automática falhou:", e)
 
 # ==========================
 # UTILITÁRIOS
