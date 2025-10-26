@@ -70,9 +70,10 @@ def _send_raw_to_printer(printer_name, data_bytes):
             pass
 
 
-def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=None):
-    """Gera PDF 80mm: título, nº do bilhete, data/hora e logo.png imediatamente após a data.
-    Mantém altura dinâmica entre 100–120 mm; tudo numa única página.
+def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
+    """Gera um único PDF com uma página por bilhete (80mm largura x altura dinâmica por página).
+    Cada bilhete contém: título, imagem.png (se existir) logo a seguir ao título, nº do bilhete,
+    data/hora e logo.png (se existir). Depois tenta enviar o PDF para a impressora predefinida.
     """
     if not REPORTLAB_AVAILABLE:
         try:
@@ -81,12 +82,12 @@ def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=N
                 "A biblioteca 'reportlab' não está instalada. Instale com: pip install reportlab"
             )
         except Exception:
-            print("A biblioteca 'reportlab' não está instalada. Instale com: pip install reportlab")
+            print("Dependência em Falta: reportlab")
         return
 
     try:
         from reportlab.lib.units import mm
-        from reportlab.platypus import SimpleDocTemplate, Paragraph, Image, Spacer
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Image, Spacer, PageBreak
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.enums import TA_CENTER
         from reportlab.lib.utils import ImageReader
@@ -97,109 +98,105 @@ def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=N
             print("Falha ao carregar módulos do reportlab.")
         return
 
-    import tempfile
-    import time
-    import webbrowser
+    import tempfile, time, webbrowser
 
-    # Página: largura fixa 80 mm, altura dinâmica entre 100 e 120 mm
+    # Configurações de página compatíveis com impressora térmica 80mm
     WIDTH_MM = 80
-    MIN_HEIGHT_MM = 100
-    MAX_HEIGHT_MM = 120
-    MARGIN_MM = 5
+    PAGE_HEIGHT_MM = 105  # altura por página (usar valor dentro do intervalo permitido)
+    MARGIN_MM = 1
 
     width_pt = WIDTH_MM * mm
+    height_pt = PAGE_HEIGHT_MM * mm
     margin_pt = MARGIN_MM * mm
     content_width_pt = width_pt - 2 * margin_pt
 
-    # estilos com leading reduzido
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle('TitleStyle', parent=styles['Normal'],
                                  fontName='Helvetica-Bold', fontSize=12, alignment=TA_CENTER, leading=13)
     small_style = ParagraphStyle('Small', parent=styles['Normal'],
                                  fontName='Helvetica', fontSize=10, alignment=TA_CENTER, leading=11)
 
-    # conteúdo
-    titulo_text = "Bilhete igreja Nossa Senhora da Oliveira"
-    numero_text = f"Nº: {numero_bilhete}"
-    data_text = f"Data/Hora: {data_hora}"
+    titulo_text = "Bilhete"
+    titulo_text2 = "Igreja Nossa Senhora da Oliveira"
 
-    # preparar logo (se existir)
+    # preparar imagem.png (após o título) e logo.png (no final), calcular tamanhos
     base_dir = os.path.dirname(__file__)
+    imagem_path = os.path.join(base_dir, "imagem.png")
+    imagem_exists = False
+    imagem_w_pt = imagem_h_pt = 0
+
     logo_path = os.path.join(base_dir, "logo.png")
-    logo_w_pt = 0
-    logo_h_pt = 0
     logo_exists = False
+    logo_w_pt = logo_h_pt = 0
+
+    if os.path.exists(imagem_path):
+        try:
+            ir = ImageReader(imagem_path)
+            iw, ih = ir.getSize()
+            if iw > 0:
+                # reduzir imagem.png para metade da largura de conteúdo por defeito
+                imagem_w_pt = content_width_pt * 0.50
+                imagem_h_pt = imagem_w_pt * (ih / float(iw))
+                imagem_exists = True
+        except Exception:
+            imagem_exists = False
+
     if os.path.exists(logo_path):
         try:
             ir = ImageReader(logo_path)
             iw, ih = ir.getSize()
             if iw > 0:
-                # usar 100% da largura de conteúdo (content_width_pt) — ocupar toda a largura disponível
+                # logo ocupa toda a largura de conteúdo por defeito
                 logo_w_pt = content_width_pt
                 logo_h_pt = logo_w_pt * (ih / float(iw))
                 logo_exists = True
-        except Exception as e:
-            print("Aviso: falha ao ler logo.png:", e)
+        except Exception:
             logo_exists = False
 
-    # estimativa de altura textual (título + nº + data)
-    text_height_pt = title_style.fontSize * 1.1 + small_style.fontSize * 1.05 * 2
-    # espaçamentos reduzidos
-    small_spacing = 2 * mm
-    spacing_after_text = 1 * mm  # pequeno espaço entre data e logo
-
-    # calcular altura total necessária (agora logo vem logo após a data)
-    images_height_pt = logo_h_pt if logo_exists else 0
-    total_needed_pt = margin_pt + text_height_pt + small_spacing + spacing_after_text + images_height_pt + margin_pt
-
-    # limitar altura entre MIN e MAX e, se necessário, reduzir logo para caber
-    max_height_pt = MAX_HEIGHT_MM * mm
-    min_height_pt = MIN_HEIGHT_MM * mm
-
-    if total_needed_pt > max_height_pt and images_height_pt > 0:
-        available_for_images = max_height_pt - (margin_pt + text_height_pt + small_spacing + spacing_after_text + margin_pt)
-        if available_for_images <= 0:
-            # não há espaço para a imagem -> remover imagem
-            logo_exists = False
-            logo_w_pt = logo_h_pt = 0
-            images_height_pt = 0
-        else:
-            scale = available_for_images / images_height_pt
-            logo_w_pt *= scale
-            logo_h_pt *= scale
-            images_height_pt = logo_h_pt
-        total_needed_pt = margin_pt + text_height_pt + small_spacing + spacing_after_text + images_height_pt + margin_pt
-
-    total_mm = total_needed_pt / mm
-    if total_mm < MIN_HEIGHT_MM:
-        total_mm = MIN_HEIGHT_MM
-    elif total_mm > MAX_HEIGHT_MM:
-        total_mm = MAX_HEIGHT_MM
-    height_pt = total_mm * mm
-
-    # criar pdf temporário
+    # criar ficheiro PDF temporário
     tmpdir = tempfile.gettempdir()
-    filename = os.path.join(tmpdir, f"bilhete_{numero_bilhete}_{int(time.time())}.pdf")
+    filename = os.path.join(tmpdir, f"bilhetes_batch_{int(time.time())}.pdf")
 
-    # montar story: título + pequeno espaço + número + data + pequeno espaço + logo (imediatamente após a data)
     story = []
-    story.append(Paragraph(titulo_text, title_style))
-    story.append(Spacer(1, small_spacing))
-    story.append(Paragraph(numero_text, small_style))
-    story.append(Spacer(1, 1 * mm))
-    story.append(Paragraph(data_text, small_style))
-    story.append(Spacer(1, spacing_after_text))
+    for idx, numero in enumerate(bilhetes):
+        # título
+        story.append(Paragraph(titulo_text, title_style))
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(titulo_text2, title_style))
 
-    # inserir logo imediatamente após a data (se existir)
-    if logo_exists and logo_h_pt > 0:
-        try:
-            logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
-            logo_img.hAlign = 'CENTER'
-            story.append(logo_img)
-        except Exception as e:
-            print("Aviso: falha ao inserir logo no PDF:", e)
+        # imagem.png logo a seguir ao título (se existir)
+        if imagem_exists and imagem_h_pt > 0:
+            try:
+                img = Image(imagem_path, width=imagem_w_pt, height=imagem_h_pt)
+                img.hAlign = 'CENTER'
+                story.append(img)
+                story.append(Spacer(1, 2 * mm))
+            except Exception:
+                # se falhar, simplesmente ignorar a imagem
+                pass
 
-    # gerar pdf
+        # número e data
+        story.append(Paragraph(f"Nº: {numero}", small_style))
+        story.append(Spacer(1, 0.5 * mm))
+        story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
+        story.append(Spacer(1, 2 * mm))
+        story.append(Paragraph(f"Preço: 2€", small_style))
+        story.append(Spacer(1, 2 * mm))
+
+        # logo imediatamente após a data (se existir)
+        if logo_exists and logo_h_pt > 0:
+            try:
+                logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
+                logo_img.hAlign = 'CENTER'
+                story.append(logo_img)
+            except Exception:
+                pass
+
+        # adicionar PageBreak entre bilhetes (não após o último)
+        if idx != len(bilhetes) - 1:
+            story.append(PageBreak())
+
+    # gerar PDF com páginas do mesmo tamanho
     doc = SimpleDocTemplate(filename, pagesize=(width_pt, height_pt),
                             leftMargin=margin_pt, rightMargin=margin_pt,
                             topMargin=margin_pt, bottomMargin=margin_pt)
@@ -207,12 +204,12 @@ def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=N
         doc.build(story)
     except Exception as e:
         try:
-            messagebox.showerror("Erro PDF", f"Falha ao criar PDF do bilhete:\n{e}")
+            messagebox.showerror("Erro PDF", f"Falha ao criar PDF dos bilhetes:\n{e}")
         except Exception:
-            print("Falha ao criar PDF do bilhete:", e)
+            print("Falha ao criar PDF dos bilhetes:", e)
         return
 
-    # imprimir usando impressora predefinida do sistema (Windows preferencialmente)
+    # tentar imprimir o PDF na impressora predefinida do sistema (Windows preferencialmente)
     try:
         if sys.platform.startswith("win") and WIN32_AVAILABLE:
             try:
@@ -225,18 +222,15 @@ def imprimir_bilhete_termo(numero_bilhete, data_hora, assistente, printer_name=N
                     webbrowser.open(filename)
         else:
             try:
-                os.startfile(filename, "print")
+                # em sistemas não-Windows, tenta abrir o PDF (usuário imprime manualmente)
+                webbrowser.open(filename)
             except Exception:
-                try:
-                    webbrowser.open(filename)
-                except Exception:
-                    pass
+                pass
     except Exception as e:
         try:
-            messagebox.showinfo("PDF Gerado", f"Bilhete gerado em:\n{filename}\nImpressão automática falhou: {e}")
+            messagebox.showinfo("PDF Gerado", f"PDF gerado em:\n{filename}\nImpressão automática falhou: {e}")
         except Exception:
-            print("Bilhete gerado em:", filename, "Impressão automática falhou:", e)
-
+            print("PDF gerado em:", filename, "Impressão automática falhou:", e)
 # ==========================
 # UTILITÁRIOS
 # ==========================
@@ -513,8 +507,42 @@ class JanelaPrincipal:
         btn_trocar.pack(side="left")
 
         # Container principal
-        main_container = tk.Frame(self.root, bg="#f8fafc")
-        main_container.pack(expand=True, fill="both", padx=20, pady=20)
+        # Container principal com scroll (garante que todo o conteúdo fica acessível em ecrãs pequenos)
+        container_outer = tk.Frame(self.root)
+        container_outer.pack(expand=True, fill="both", padx=20, pady=20)
+
+        canvas = tk.Canvas(container_outer, bg="#f8fafc", highlightthickness=0)
+        vscroll = ttk.Scrollbar(container_outer, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+        vscroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        # frame onde será colocado todo o conteúdo (usamos o mesmo nome main_container para compatibilidade)
+        main_container = tk.Frame(canvas, bg="#f8fafc")
+        self._canvas_window = canvas.create_window((0, 0), window=main_container, anchor="nw")
+
+        # atualizar scrollregion quando o conteúdo mudar e forçar largura interna igual à do canvas
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+        def _on_canvas_configure(event):
+            canvas.itemconfig(self._canvas_window, width=event.width)
+        main_container.bind("<Configure>", _on_frame_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        # suporte a roda do rato (Windows/Mac/Linux)
+        def _on_mousewheel(event):
+            try:
+                if sys.platform == "darwin":
+                    delta = -1 * int(event.delta)
+                else:
+                    delta = -1 * int(event.delta / 120)
+            except Exception:
+                delta = 0
+            if delta:
+                canvas.yview_scroll(delta, "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-1, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(1, "units"))
 
         # Painel esquerdo - Formulário de venda
         left_panel = tk.Frame(main_container, bg="white", relief="flat", bd=1)
@@ -944,17 +972,12 @@ class JanelaPrincipal:
         self._atualizar_status()
         messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
         self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
-        # Após gravar, tentar imprimir cada bilhete
+        # Após gravar, gerar um único PDF contendo todos os bilhetes registados nesta operação
         try:
-            for numero in bilhetes:
-                try:
-                    imprimir_bilhete_termo(numero, data_hora, self.assistente)
-                except Exception as e:
-                    # não interromper o fluxo por causa de falha numa impressão
-                    print(f"Erro ao imprimir {numero}: {e}")
-        except Exception:
-            pass
-
+            imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente)
+        except Exception as e:
+            # não interrompe o fluxo por causa de falha na impressão/geração do PDF
+            print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
 
     def atualizar_tabela(self):
         # refresh table with today's data
