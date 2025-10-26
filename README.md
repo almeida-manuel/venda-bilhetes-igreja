@@ -16,4 +16,5 @@ Multi-assistant support with simple login.
 
 This project is ideal for small organizations or events needing a simple yet effective way to manage ticket sales and generate reports automatically.
 
-<img width="1919" height="1031" alt="image" src="https://github.com/user-attachments/assets/37e5a421-3f1d-4e48-b3d8-9173931d9230" />
+<img width="1919" height="1015" alt="image" src="https://github.com/user-attachments/assets/4d0ed889-6007-4c67-aa80-7066c4a33910" />
+
