@@ -1,4 +1,4 @@
-A desktop application built with Python and Tkinter for managing ticket sales in a church setting. This system allows assistants to register ticket sales efficiently, track sales by date, generate Excel and PDF reports, and perform backups. Key features include:
+A desktop application built with Python and Tkinter for managing ticket sales in a church setting. This system allows assistants to register ticket sales efficiently, track sales by date, generate Excel reports, and perform backups. Key features include:
 
 User-friendly interface with modern design.
 
@@ -8,7 +8,7 @@ Search and filter tickets by ticket number.
 
 Sales statistics by nationality and payment method.
 
-Excel and PDF report generation for daily sales.
+Excel report generation for daily sales.
 
 Backup creation to ensure data safety.
 
