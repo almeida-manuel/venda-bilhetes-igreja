@@ -102,7 +102,7 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
 
     # Configurações de página compatíveis com impressora térmica 80mm
     WIDTH_MM = 80
-    PAGE_HEIGHT_MM = 105  # altura por página (usar valor dentro do intervalo permitido)
+    PAGE_HEIGHT_MM = 107  # altura por página (usar valor dentro do intervalo permitido)
     MARGIN_MM = 1
 
     width_pt = WIDTH_MM * mm
@@ -159,12 +159,25 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
 
     story = []
     for idx, numero in enumerate(bilhetes):
+        # logo
+        if logo_exists and logo_h_pt > 0:
+            try:
+                logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
+                logo_img.hAlign = 'CENTER'
+                story.append(logo_img)
+            except Exception:
+                pass
+
         # título
         story.append(Paragraph(titulo_text, title_style))
-        story.append(Spacer(1, 2 * mm))
         story.append(Paragraph(titulo_text2, title_style))
+        story.append(Spacer(1, 2 * mm))
 
-        # imagem.png logo a seguir ao título (se existir)
+        #preço
+        story.append(Paragraph(f"Preço: 2€", title_style))
+        story.append(Spacer(1, 2 * mm))
+
+        # imagem.png logo
         if imagem_exists and imagem_h_pt > 0:
             try:
                 img = Image(imagem_path, width=imagem_w_pt, height=imagem_h_pt)
@@ -175,22 +188,11 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
                 # se falhar, simplesmente ignorar a imagem
                 pass
 
-        # número e data
-        story.append(Paragraph(f"Nº: {numero}", small_style))
-        story.append(Spacer(1, 0.5 * mm))
+        # data/hora e mensagem
         story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
         story.append(Spacer(1, 2 * mm))
-        story.append(Paragraph(f"Preço: 2€", small_style))
+        story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
         story.append(Spacer(1, 2 * mm))
-
-        # logo imediatamente após a data (se existir)
-        if logo_exists and logo_h_pt > 0:
-            try:
-                logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
-                logo_img.hAlign = 'CENTER'
-                story.append(logo_img)
-            except Exception:
-                pass
 
         # adicionar PageBreak entre bilhetes (não após o último)
         if idx != len(bilhetes) - 1:
