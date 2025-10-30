@@ -315,6 +315,53 @@ class DatabaseManager:
             # Se qualquer erro ocorrer aqui, não queremos quebrar a inicialização; seguir em frente
             pass
 
+        # tabela para eventos (registos auxiliares como 'nao_entraram')
+        try:
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS eventos (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TEXT,
+                    event_type TEXT,
+                    count INTEGER,
+                    assistente TEXT,
+                    notes TEXT
+                )
+            """)
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def inserir_evento(self, event_type, count=None, assistente=None, notes=None, timestamp=None):
+        try:
+            ts = timestamp if timestamp is not None else datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.cursor.execute(
+                "INSERT INTO eventos (timestamp, event_type, count, assistente, notes) VALUES (?, ?, ?, ?, ?)",
+                (ts, event_type, count, assistente, notes)
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def obter_eventos_por_tipo(self, event_type, dia_str=None):
+        if dia_str is None:
+            dia_str = hoje_str()
+        try:
+            self.cursor.execute(
+                "SELECT id, timestamp, event_type, count, assistente, notes FROM eventos WHERE event_type = ? AND date(timestamp) = ? ORDER BY id DESC",
+                (event_type, dia_str)
+            )
+            return self.cursor.fetchall()
+        except Exception:
+            return []
+
+    def apagar_evento_por_id(self, event_id):
+        try:
+            self.cursor.execute("DELETE FROM eventos WHERE id = ?", (event_id,))
+            self.conn.commit()
+            return True
+        except Exception:
+            return False
+
     def inserir_registo(self, data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes=None):
         self.cursor.execute("""
             INSERT INTO registos (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes)
@@ -566,8 +613,7 @@ class JanelaPrincipal:
             ("Método de Pagamento:", "combo_pagamento"),
             ("Recibo:", "combo_fatura"),
             ("Anotações (opcional):", "entry_anotacoes"),
-            ("Quantidade:", "spin_quantidade"),
-            ("Não Entraram:", "spin_nao_entraram")
+            ("Quantidade:", "spin_quantidade")
         ]
 
         nacionalidades = [
@@ -661,6 +707,62 @@ class JanelaPrincipal:
                               padx=20, pady=10,
                               command=self.fechar_dia)
         btn_fechar.pack(side="left")
+
+        # Linha abaixo dos botões: registo de pessoas que não entraram
+        try:
+            reg_row = line + 1
+            tk.Label(form_container, text="Registar Não Entraram:", font=AF(10, "bold"), bg="white", fg="#4a5568").grid(row=reg_row, column=0, sticky="w", pady=8, padx=(0,10))
+            self.spin_reg_nao_entraram = ttk.Spinbox(form_container, from_=1, to=50, width=10, font=AF(10))
+            self.spin_reg_nao_entraram.set(1)
+            self.spin_reg_nao_entraram.grid(row=reg_row, column=1, sticky="w", pady=8)
+            # botão para registar o(s) não entrado(s)
+            def _on_registar_nao_entraram():
+                # impedir registos após o dia estar fechado
+                try:
+                    if getattr(self, 'dia_fechado', False):
+                        messagebox.showwarning("Aviso", "O dia já está fechado. Não é possível registar mais 'Não Entraram'.")
+                        return
+                except Exception:
+                    pass
+                try:
+                    cnt = int(self.spin_reg_nao_entraram.get())
+                except Exception:
+                    messagebox.showwarning("Aviso", "Quantidade inválida para registo de Não Entraram.")
+                    return
+                if cnt <= 0:
+                    messagebox.showwarning("Aviso", "Quantidade deve ser pelo menos 1.")
+                    return
+                timestamps = []
+                for i in range(cnt):
+                    ts = agora_str()
+                    try:
+                        # gravar um evento por pessoa com timestamp individual
+                        self.db.inserir_evento('nao_entraram', count=1, assistente=self.assistente, notes=None, timestamp=ts)
+                        timestamps.append(ts)
+                    except Exception:
+                        pass
+                if timestamps:
+                    messagebox.showinfo("Registo Efetuado", f"Registados {len(timestamps)} não entrado(s) com horas:\n{', '.join(timestamps)}")
+                    self._set_status(f"{len(timestamps)} 'Não Entraram' registado(s).")
+                    try:
+                        # resetar spinbox para 1 após registo
+                        self.spin_reg_nao_entraram.set(1)
+                    except Exception:
+                        pass
+                else:
+                    messagebox.showwarning("Aviso", "Falha ao registar Não Entraram.")
+
+            btn_reg_nao = tk.Button(form_container, text="Registar Não Entrou(s)", font=AF(10), bg="#f56565", fg="white", activebackground="#c53030", relief="flat", command=_on_registar_nao_entraram)
+            # colocar o botão abaixo da spinbox (na próxima linha, mesma coluna da spinbox)
+            btn_reg_nao.grid(row=reg_row+1, column=1, sticky="w", pady=(4, 0))
+            # expor como atributo para poder ser desativado ao fechar o dia
+            try:
+                self.btn_reg_nao = btn_reg_nao
+            except Exception:
+                pass
+        except Exception:
+            # se algo falhar aqui, não quebrar a criação da interface
+            pass
 
         # Painel direito - Estatísticas e dados
         right_panel = tk.Frame(main_container, bg="#f8fafc")
@@ -1041,7 +1143,7 @@ class JanelaPrincipal:
             self.dia_fechado = True
             # desativar inputs
             for w in [self.combo_nacionalidade, self.combo_pagamento, self.combo_fatura,
-                      self.entry_contribuinte, self.entry_anotacoes, self.entry_manual_nacionalidade, self.spin_quantidade, getattr(self, 'spin_nao_entraram', None)]:
+                      self.entry_contribuinte, self.entry_anotacoes, self.entry_manual_nacionalidade, self.spin_quantidade, getattr(self, 'spin_reg_nao_entraram', None), getattr(self, 'btn_reg_nao', None)]:
                 try:
                     w.config(state="disabled")
                 except Exception:
@@ -1108,10 +1210,18 @@ class JanelaPrincipal:
         total = len(dados)
         ws.append([])
         ws.append(["Total de Bilhetes Vendidos:", total])
-        # incluir contador de pessoas que não entraram (se o widget existir)
+        # Incluir registos 'Não Entraram' (horas) na folha, se existirem eventos para hoje
         try:
-            nao_entraram = int(self.spin_nao_entraram.get()) if hasattr(self, 'spin_nao_entraram') else 0
-            ws.append(["Não Entraram:", nao_entraram])
+            eventos = self.db.obter_eventos_por_tipo('nao_entraram')
+            if eventos:
+                ws.append([])
+                ws.append(["Registos 'Não Entraram' (horas):"])
+                # adicionar cabeçalho simples
+                ws.append(["Hora", "Assistente", "Notas"])
+                # eventos is list of (id, timestamp, event_type, count, assistente, notes)
+                for ev in reversed(eventos):
+                    _, ts, _, cnt, assist, notes = ev
+                    ws.append([ts, assist or "", notes or ""])
         except Exception:
             pass
         # incluir anotações finais no Excel: uma linha após os totais e, opcionalmente, numa aba separada
@@ -1184,15 +1294,7 @@ class JanelaPrincipal:
         tabela_dados.append(empty_row)
         tabela_dados.append(row_total)
 
-        # Não Entraram
-        try:
-            nao_entraram = int(self.spin_nao_entraram.get()) if hasattr(self, 'spin_nao_entraram') else 0
-            row_ne = [""] * len(cabecalho)
-            row_ne[0] = "Não Entraram:"
-            row_ne[1] = nao_entraram
-            tabela_dados.append(row_ne)
-        except Exception:
-            pass
+        # (campo 'Não Entraram' removido — não incluir essa linha no relatório)
 
         # Anotações finais (se existirem)
         try:
