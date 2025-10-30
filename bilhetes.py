@@ -564,7 +564,7 @@ class JanelaPrincipal:
         fields = [
             ("Nacionalidade:", "combo_nacionalidade"),
             ("Método de Pagamento:", "combo_pagamento"),
-            ("Fatura:", "combo_fatura"),
+            ("Recibo:", "combo_fatura"),
             ("Anotações (opcional):", "entry_anotacoes"),
             ("Quantidade:", "spin_quantidade"),
             ("Não Entraram:", "spin_nao_entraram")
@@ -754,8 +754,12 @@ class JanelaPrincipal:
         self.tree = ttk.Treeview(table_content, columns=cols, show="headings", height=15)
         
         # Configurar colunas
+        # Map some internal column names to nicer display headings
+        display_names = {
+            'fatura': 'Recibo'
+        }
         for c in cols:
-            heading = c.replace("_", " ").capitalize()
+            heading = display_names.get(c, c.replace("_", " ").capitalize())
             self.tree.heading(c, text=heading)
             # aumentar largura da coluna 'anotacoes'
             col_width = 220 if c == 'anotacoes' else 120
@@ -913,7 +917,7 @@ class JanelaPrincipal:
             if fatura and fatura.lower() == 'sim':
                 contribuinte = self.contribuinte_var.get().strip()
                 if not contribuinte:
-                    messagebox.showwarning("Aviso", "Por favor insira o Nº Contribuinte quando selecionar 'Sim' em Fatura.")
+                    messagebox.showwarning("Aviso", "Por favor insira o Nº Contribuinte quando selecionar 'Sim' em Recibo.")
                     return
             else:
                 # ensure empty when not required
@@ -1087,7 +1091,7 @@ class JanelaPrincipal:
         wb = Workbook()
         ws = wb.active
         ws.title = "Bilhetes do Dia"
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Fatura", "Contribuinte", "Anotações"]
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Recibo", "Contribuinte", "Anotações"]
         ws.append(cabecalho)
         for col_num, _ in enumerate(cabecalho, 1):
             ws[f"{get_column_letter(col_num)}1"].font = Font(bold=True)
@@ -1160,7 +1164,7 @@ class JanelaPrincipal:
         elementos = []
         styles = getSampleStyleSheet()
         elementos.append(Paragraph(f"<b>Relatório de Bilhetes - {hoje}</b>", styles["Title"]))
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Fatura", "Contribuinte", "Anotações"]
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Recibo", "Contribuinte", "Anotações"]
         tabela_dados = [cabecalho]
         for row in dados:
             r = list(row)
