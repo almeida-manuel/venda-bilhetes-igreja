@@ -10,6 +10,10 @@ import os
 import sys
 import tkinter.font as tkfont
 
+# Valores de configuração
+TICKET_PRICE = 2.0  # preço por bilhete em euros
+INITIAL_CASH = 100.0  # caixa inicial em euros
+
 # --- Impressão térmica (Windows, impressora USB comum) ---
 try:
     import win32print
@@ -30,6 +34,10 @@ try:
     REPORTLAB_AVAILABLE = True
 except Exception:
     REPORTLAB_AVAILABLE = False
+
+    # Configurações financeiras
+    PRICE_PER_TICKET = 2.0  # Euros por bilhete
+    STARTING_CASH = 100.0   # Valor inicial em caixa (euros)
 
 
 def _get_default_printer_name():
@@ -732,24 +740,23 @@ class JanelaPrincipal:
                 if cnt <= 0:
                     messagebox.showwarning("Aviso", "Quantidade deve ser pelo menos 1.")
                     return
-                timestamps = []
-                for i in range(cnt):
-                    ts = agora_str()
+                # Registar um único evento com a quantidade (count) e o timestamp atual.
+                ts = agora_str()
+                try:
+                    self.db.inserir_evento('nao_entraram', count=cnt, assistente=self.assistente, notes=None, timestamp=ts)
+                    # mostrar apenas a hora ao utilizador
                     try:
-                        # gravar um evento por pessoa com timestamp individual
-                        self.db.inserir_evento('nao_entraram', count=1, assistente=self.assistente, notes=None, timestamp=ts)
-                        timestamps.append(ts)
+                        hora = ts.split(' ')[1]
                     except Exception:
-                        pass
-                if timestamps:
-                    messagebox.showinfo("Registo Efetuado", f"Registados {len(timestamps)} não entrado(s) com horas:\n{', '.join(timestamps)}")
-                    self._set_status(f"{len(timestamps)} 'Não Entraram' registado(s).")
+                        hora = ts
+                    messagebox.showinfo("Registo Efetuado", f"Registados {cnt} não entrado(s) às {hora}")
+                    self._set_status(f"{cnt} 'Não Entraram' registado(s) às {hora}.")
                     try:
                         # resetar spinbox para 1 após registo
                         self.spin_reg_nao_entraram.set(1)
                     except Exception:
                         pass
-                else:
+                except Exception:
                     messagebox.showwarning("Aviso", "Falha ao registar Não Entraram.")
 
             btn_reg_nao = tk.Button(form_container, text="Registar Não Entrou(s)", font=AF(10), bg="#f56565", fg="white", activebackground="#c53030", relief="flat", command=_on_registar_nao_entraram)
@@ -782,6 +789,17 @@ class JanelaPrincipal:
 
         self.lbl_total_today = tk.Label(stats_content, text="Total de bilhetes hoje: 0", font=AF(12, "bold"), bg="white", fg="#2d3748")
         self.lbl_total_today.pack(anchor="w", pady=(0, 15))
+
+        # Caixa / Totais de pagamento
+        money_frame = tk.Frame(stats_content, bg="white")
+        money_frame.pack(anchor="w", pady=(0, 10))
+
+        self.lbl_caixa_total = tk.Label(money_frame, text=f"Caixa total: €{INITIAL_CASH:.2f}", font=AF(10, "bold"), bg="white", fg="#2d3748")
+        self.lbl_caixa_total.pack(anchor="w")
+        self.lbl_numerario = tk.Label(money_frame, text="Numerário: €0.00", font=AF(10), bg="white", fg="#2d3748")
+        self.lbl_numerario.pack(anchor="w")
+        self.lbl_multibanco = tk.Label(money_frame, text="Multibanco: €0.00", font=AF(10), bg="white", fg="#2d3748")
+        self.lbl_multibanco.pack(anchor="w")
 
         # Tabela de nacionalidades
         nat_frame = tk.Frame(stats_content, bg="white")
@@ -1210,18 +1228,49 @@ class JanelaPrincipal:
         total = len(dados)
         ws.append([])
         ws.append(["Total de Bilhetes Vendidos:", total])
+        # Calcular e adicionar totais monetários ao Excel
+        try:
+            cash_count = 0
+            card_count = 0
+            for row in dados:
+                metodo = (row[4] or "").strip().lower()
+                if metodo == 'dinheiro':
+                    cash_count += 1
+                elif metodo.startswith('cart') or 'multibanco' in metodo or 'cartão' in metodo:
+                    card_count += 1
+            cash_amount = cash_count * TICKET_PRICE
+            card_amount = card_count * TICKET_PRICE
+            numerario_total = INITIAL_CASH + cash_amount
+            caixa_total = numerario_total + card_amount
+            ws.append(["Numerário:", f"€{numerario_total:.2f}"])
+            ws.append(["Multibanco:", f"€{card_amount:.2f}"])
+            ws.append(["Caixa total:", f"€{caixa_total:.2f}"])
+        except Exception:
+            # não impedir criação do Excel se falhar o cálculo
+            pass
         # Incluir registos 'Não Entraram' (horas) na folha, se existirem eventos para hoje
         try:
             eventos = self.db.obter_eventos_por_tipo('nao_entraram')
             if eventos:
                 ws.append([])
                 ws.append(["Registos 'Não Entraram' (horas):"])
-                # adicionar cabeçalho simples
-                ws.append(["Hora", "Assistente", "Notas"])
+                # adicionar cabeçalho simples: Hora, Assistente, Quantidade
+                ws.append(["Hora", "Assistente", "Quantidade"])
                 # eventos is list of (id, timestamp, event_type, count, assistente, notes)
                 for ev in reversed(eventos):
                     _, ts, _, cnt, assist, notes = ev
-                    ws.append([ts, assist or "", notes or ""])
+                    try:
+                        hora = ts.split(' ')[1]
+                    except Exception:
+                        hora = ts
+                    ws.append([hora, assist or "", cnt or ""])
+                # adicionar total de pessoas que não entraram
+                try:
+                    total_nao_entraram = sum(int(ev[3] or 0) for ev in eventos)
+                    ws.append([])
+                    ws.append(["Total Não Entraram:", total_nao_entraram])
+                except Exception:
+                    pass
         except Exception:
             pass
         # incluir anotações finais no Excel: uma linha após os totais e, opcionalmente, numa aba separada
@@ -1336,6 +1385,36 @@ class JanelaPrincipal:
         for row in dados:
             nat = row[2] or "Outros"
             summary[nat] = summary.get(nat, 0) + 1
+
+        # calcular totais por método de pagamento
+        try:
+            cash_count = 0
+            card_count = 0
+            for row in dados:
+                metodo = (row[4] or "").strip().lower()
+                if metodo == 'dinheiro':
+                    cash_count += 1
+                elif metodo.startswith('cart') or 'multibanco' in metodo or 'cartão' in metodo:
+                    card_count += 1
+        except Exception:
+            cash_count = 0
+            card_count = 0
+
+        cash_amount = cash_count * TICKET_PRICE
+        card_amount = card_count * TICKET_PRICE
+
+        # Numerário deve incluir o valor inicial da caixa
+        numerario_total = INITIAL_CASH + cash_amount
+        # Caixa total inclui numerário (com caixa inicial) e também o multibanco
+        caixa_total = numerario_total + card_amount
+
+        # atualizar rótulos de valores monetários
+        try:
+            self.lbl_numerario.config(text=f"Numerário: €{numerario_total:.2f}")
+            self.lbl_multibanco.config(text=f"Multibanco: €{card_amount:.2f}")
+            self.lbl_caixa_total.config(text=f"Caixa total: €{caixa_total:.2f}")
+        except Exception:
+            pass
 
         # limpar lista
         for ch in self.lst_nacionalidades.get_children():
