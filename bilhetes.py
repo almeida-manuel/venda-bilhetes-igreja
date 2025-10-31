@@ -78,7 +78,7 @@ def _send_raw_to_printer(printer_name, data_bytes):
             pass
 
 
-def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
+def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagamento=None, recebido=None, troco=None):
     """Gera um único PDF com uma página por bilhete (80mm largura x altura dinâmica por página).
     Cada bilhete contém: título, imagem.png (se existir) logo a seguir ao título, nº do bilhete,
     data/hora e logo.png (se existir). Depois tenta enviar o PDF para a impressora predefinida.
@@ -97,7 +97,7 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
         from reportlab.lib.units import mm
         from reportlab.platypus import SimpleDocTemplate, Paragraph, Image, Spacer, PageBreak
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
         from reportlab.lib.utils import ImageReader
     except Exception:
         try:
@@ -110,7 +110,7 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
 
     # Configurações de página compatíveis com impressora térmica 80mm
     WIDTH_MM = 80
-    PAGE_HEIGHT_MM = 107  # altura por página (usar valor dentro do intervalo permitido)
+    PAGE_HEIGHT_MM = 123  # altura por página (usar valor dentro do intervalo permitido)
     MARGIN_MM = 1
 
     width_pt = WIDTH_MM * mm
@@ -123,6 +123,8 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
                                  fontName='Helvetica-Bold', fontSize=12, alignment=TA_CENTER, leading=13)
     small_style = ParagraphStyle('Small', parent=styles['Normal'],
                                  fontName='Helvetica', fontSize=10, alignment=TA_CENTER, leading=11)
+    receipt_style = ParagraphStyle('Small', parent=styles['Normal'],
+                                 fontName='Helvetica', fontSize=9, alignment=TA_LEFT, leading=11)
 
     titulo_text = "Bilhete"
     titulo_text2 = "Igreja Nossa Senhora da Oliveira"
@@ -199,8 +201,27 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente):
         # data/hora e mensagem
         story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
         story.append(Spacer(1, 2 * mm))
-        story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
-        story.append(Spacer(1, 2 * mm))
+        
+        try:
+            story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
+            story.append(Spacer(1, 2 * mm))
+            story.append(Spacer(1, 2 * mm))
+        except Exception:
+            pass
+
+        # método de pagamento
+        try:
+            if metodo_pagamento:
+                story.append(Paragraph(f"Pagamento: {metodo_pagamento}", receipt_style))
+            # se pagamento em numerário e valores fornecidos, mostrar recebido e troco
+            if metodo_pagamento and str(metodo_pagamento).strip().lower() == 'dinheiro':
+                if recebido is not None:
+                    story.append(Paragraph(f"Recebido: €{float(recebido):.2f}", receipt_style))
+                if troco is not None:
+                    story.append(Paragraph(f"Troco: €{float(troco):.2f}", receipt_style))
+                story.append(Spacer(1, 2 * mm))
+        except Exception:
+            pass
 
         # adicionar PageBreak entre bilhetes (não após o último)
         if idx != len(bilhetes) - 1:
@@ -1059,18 +1080,11 @@ class JanelaPrincipal:
             # se por alguma razão não for ScrolledText (compatibilidade), tentar Entry
             anotacoes = getattr(self, 'entry_anotacoes').get().strip() or None
 
+        # preparar números dos bilhetes (ainda não gravar — pedir pagamento primeiro)
         proximo = self._proximo_numero_bilhete()
         ano = datetime.now().year
         data_hora = agora_str()
-        bilhetes = []
-        try:
-            for i in range(quantidade):
-                numero = f"IG{ano}-{proximo + i}"
-                bilhetes.append(numero)
-                self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
-        except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao guardar registo:\n{e}")
-            return
+        bilhetes = [f"IG{ano}-{proximo + i}" for i in range(quantidade)]
 
         # limpar campos e atualizar
         self.combo_nacionalidade.set("Português")
@@ -1094,16 +1108,156 @@ class JanelaPrincipal:
                 pass
         self.spin_quantidade.set(1)
 
-        self.atualizar_tabela()
-        self._atualizar_status()
-        messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
-        self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
-        # Após gravar, gerar um único PDF contendo todos os bilhetes registados nesta operação
+        # Após preparar os bilhetes, dependendo do método de pagamento:
+        # - se for 'Dinheiro' abrir popup para introduzir valor recebido e calcular troco
+        # - se for outro método (ex. cartão/multibanco) gravar diretamente e gerar o PDF
         try:
-            imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente)
+            total_price = len(bilhetes) * TICKET_PRICE
+            metodo_norm = (metodo_pagamento or "").strip().lower()
+            if metodo_norm and metodo_norm != 'dinheiro':
+                # pagamento por cartão: gravar registos e gerar PDF sem pedir valor recebido
+                try:
+                    for numero in bilhetes:
+                        try:
+                            self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                        except Exception:
+                            pass
+                    try:
+                        self.atualizar_tabela()
+                        self._atualizar_status()
+                    except Exception:
+                        pass
+                    try:
+                        messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
+                        self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
+                    except Exception:
+                        pass
+                    try:
+                        imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento)
+                    except Exception as e:
+                        print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
+                except Exception as e:
+                    messagebox.showerror("Erro", f"Erro ao gravar registos:\n{e}")
+            else:
+                # pagamento em numerário: pedir valor recebido via popup
+                self._pedir_pagamento_e_imprimir(bilhetes, data_hora, total_price,
+                                                 nacionalidade, metodo_pagamento, fatura, contribuinte, anotacoes)
         except Exception as e:
-            # não interrompe o fluxo por causa de falha na impressão/geração do PDF
-            print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
+            print(f"Erro ao iniciar fluxo de pagamento: {e}")
+
+    def _pedir_pagamento_e_imprimir(self, bilhetes, data_hora, total_price,
+                                    nacionalidade=None, metodo_pagamento=None, fatura=None, contribuinte=None, anotacoes=None):
+        """Abre um popup modal para introduzir o valor recebido pelo cliente, mostra o troco e confirma antes de gerar o PDF."""
+        popup = tk.Toplevel(self.root)
+        popup.title("Pagamento")
+        popup.geometry("360x180")
+        popup.transient(self.root)
+        popup.grab_set()
+
+        tk.Label(popup, text=f"Total a Pagar: €{total_price:.2f}", font=AF(11, "bold")).pack(pady=(12, 6))
+
+        entry_frame = tk.Frame(popup)
+        entry_frame.pack(pady=(6, 6))
+        tk.Label(entry_frame, text="Valor Recebido: €", font=AF(10)).pack(side="left")
+        recebido_var = tk.StringVar()
+        recebido_entry = ttk.Entry(entry_frame, textvariable=recebido_var, width=12, font=AF(10))
+        recebido_entry.pack(side="left")
+        recebido_entry.focus()
+
+        troco_label = tk.Label(popup, text="Troco: €0.00", font=AF(10))
+        troco_label.pack(pady=(6, 8))
+
+        def _update_troco(*args):
+            s = recebido_var.get().strip()
+            try:
+                val = float(s.replace(',', '.')) if s else 0.0
+                troco = val - float(total_price)
+                troco_label.config(text=f"Troco: €{troco:.2f}")
+            except Exception:
+                troco_label.config(text="Troco: —")
+
+        recebido_var.trace_add('write', _update_troco)
+
+        btn_frame = tk.Frame(popup)
+        btn_frame.pack(pady=(6, 8))
+
+        def confirmar_pagamento():
+            s = recebido_var.get().strip()
+            try:
+                received = float(s.replace(',', '.'))
+            except Exception:
+                messagebox.showwarning("Aviso", "Introduza um valor recebido válido (ex.: 10.00)")
+                return
+            if received < total_price:
+                if not messagebox.askyesno("Valor Inferior", "O valor recebido é inferior ao total. Deseja continuar mesmo assim?"):
+                    return
+            try:
+                troco = received - total_price
+            except Exception:
+                troco = 0.0
+            # mostrar troco final antes de prosseguir
+            messagebox.showinfo("Troco", f"Troco a entregar: €{troco:.2f}")
+            popup.destroy()
+            # após confirmação, gravar os registos no BD, atualizar UI e gerar PDF
+            try:
+                for numero in bilhetes:
+                    try:
+                        self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                    except Exception:
+                        # continuar a tentar inserir outros bilhetes
+                        pass
+                # limpar campos e atualizar
+                try:
+                    self.combo_nacionalidade.set("Português")
+                    self.entry_manual_nacionalidade.grid_forget()
+                    self.manual_nacionalidade_var.set("")
+                except Exception:
+                    pass
+                try:
+                    self.combo_pagamento.set("Dinheiro")
+                    self.combo_fatura.set("Não")
+                    self.entry_contribuinte.delete(0, tk.END)
+                except Exception:
+                    pass
+                try:
+                    self.entry_anotacoes.delete("1.0", tk.END)
+                except Exception:
+                    try:
+                        self.entry_anotacoes.delete(0, tk.END)
+                    except Exception:
+                        pass
+                try:
+                    self.spin_quantidade.set(1)
+                except Exception:
+                    pass
+
+                # atualizar tabela e estatísticas
+                try:
+                    self.atualizar_tabela()
+                    self._atualizar_status()
+                except Exception:
+                    pass
+
+                # informar sucesso e gerar PDF
+                try:
+                    messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
+                    self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
+                except Exception:
+                    pass
+                try:
+                    imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco)
+                except Exception as e:
+                    print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Erro ao gravar registos após confirmação do pagamento:\n{e}")
+
+        def cancelar():
+            popup.destroy()
+
+        ttk.Button(btn_frame, text="Confirmar", command=confirmar_pagamento).pack(side="left", padx=8)
+        ttk.Button(btn_frame, text="Cancelar", command=cancelar).pack(side="left")
+
+        popup.wait_window()
 
     def atualizar_tabela(self):
         # refresh table with today's data
@@ -1140,7 +1294,6 @@ class JanelaPrincipal:
             return
         if not messagebox.askyesno("Fechar o Dia", "Tem a certeza que deseja fechar o dia?"):
             return
-
         # pedir anotações finais (opcional)
         popup = tk.Toplevel(self.root)
         popup.title("Anotações Finais (opcional)")
