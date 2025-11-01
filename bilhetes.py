@@ -78,7 +78,7 @@ def _send_raw_to_printer(printer_name, data_bytes):
             pass
 
 
-def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagamento=None, recebido=None, troco=None):
+def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagamento=None, recebido=None, troco=None, quantidade=None):
     """Gera um único PDF com uma página por bilhete (80mm largura x altura dinâmica por página).
     Cada bilhete contém: título, imagem.png (se existir) logo a seguir ao título, nº do bilhete,
     data/hora e logo.png (se existir). Depois tenta enviar o PDF para a impressora predefinida.
@@ -110,7 +110,7 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagam
 
     # Configurações de página compatíveis com impressora térmica 80mm
     WIDTH_MM = 80
-    PAGE_HEIGHT_MM = 123  # altura por página (usar valor dentro do intervalo permitido)
+    PAGE_HEIGHT_MM = 127  # altura por página (usar valor dentro do intervalo permitido)
     MARGIN_MM = 1
 
     width_pt = WIDTH_MM * mm
@@ -168,64 +168,132 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagam
     filename = os.path.join(tmpdir, f"bilhetes_batch_{int(time.time())}.pdf")
 
     story = []
-    for idx, numero in enumerate(bilhetes):
-        # logo
-        if logo_exists and logo_h_pt > 0:
+    # Se for uma venda agrupada (quantidade > 1) geramos uma única página
+    try:
+        if quantidade and int(quantidade) > 1:
+            numero = bilhetes[0] if bilhetes else ''
+            # logo
+            if logo_exists and logo_h_pt > 0:
+                try:
+                    logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
+                    logo_img.hAlign = 'CENTER'
+                    story.append(logo_img)
+                except Exception:
+                    pass
+
+            # título
+            story.append(Paragraph(titulo_text, title_style))
+            story.append(Paragraph(titulo_text2, title_style))
+            story.append(Spacer(1, 2 * mm))
+
+            # preço total
             try:
-                logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
-                logo_img.hAlign = 'CENTER'
-                story.append(logo_img)
+                total_price = float(quantidade) * TICKET_PRICE
+                story.append(Paragraph(f"Preço total: €{total_price:.2f}", title_style))
+            except Exception:
+                story.append(Paragraph(f"Preço: {TICKET_PRICE:.2f}€", title_style))
+            story.append(Spacer(1, 2 * mm))
+
+            # imagem.png logo
+            if imagem_exists and imagem_h_pt > 0:
+                try:
+                    img = Image(imagem_path, width=imagem_w_pt, height=imagem_h_pt)
+                    img.hAlign = 'CENTER'
+                    story.append(img)
+                    story.append(Spacer(1, 2 * mm))
+                except Exception:
+                    pass
+
+            # data/hora e mensagem
+            story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
+            story.append(Spacer(1, 2 * mm))
+
+            try:
+                story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
+                story.append(Spacer(1, 2 * mm))
+                story.append(Spacer(1, 2 * mm))
             except Exception:
                 pass
 
-        # título
-        story.append(Paragraph(titulo_text, title_style))
-        story.append(Paragraph(titulo_text2, title_style))
-        story.append(Spacer(1, 2 * mm))
-
-        #preço
-        story.append(Paragraph(f"Preço: 2€", title_style))
-        story.append(Spacer(1, 2 * mm))
-
-        # imagem.png logo
-        if imagem_exists and imagem_h_pt > 0:
+            # quantidade
             try:
-                img = Image(imagem_path, width=imagem_w_pt, height=imagem_h_pt)
-                img.hAlign = 'CENTER'
-                story.append(img)
-                story.append(Spacer(1, 2 * mm))
+                story.append(Paragraph(f"Quantidade: {int(quantidade)}", receipt_style))
             except Exception:
-                # se falhar, simplesmente ignorar a imagem
                 pass
 
-        # data/hora e mensagem
-        story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
-        story.append(Spacer(1, 2 * mm))
-        
-        try:
-            story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
-            story.append(Spacer(1, 2 * mm))
-            story.append(Spacer(1, 2 * mm))
-        except Exception:
-            pass
+            # método de pagamento
+            try:
+                if metodo_pagamento:
+                    story.append(Paragraph(f"Pagamento: {metodo_pagamento}", receipt_style))
+                if metodo_pagamento and str(metodo_pagamento).strip().lower() == 'dinheiro':
+                    if recebido is not None:
+                        story.append(Paragraph(f"Recebido: €{float(recebido):.2f}", receipt_style))
+                    if troco is not None:
+                        story.append(Paragraph(f"Troco: €{float(troco):.2f}", receipt_style))
+                    story.append(Spacer(1, 2 * mm))
+            except Exception:
+                pass
+        else:
+            for idx, numero in enumerate(bilhetes):
+                # logo
+                if logo_exists and logo_h_pt > 0:
+                    try:
+                        logo_img = Image(logo_path, width=logo_w_pt, height=logo_h_pt)
+                        logo_img.hAlign = 'CENTER'
+                        story.append(logo_img)
+                    except Exception:
+                        pass
 
-        # método de pagamento
-        try:
-            if metodo_pagamento:
-                story.append(Paragraph(f"Pagamento: {metodo_pagamento}", receipt_style))
-            # se pagamento em numerário e valores fornecidos, mostrar recebido e troco
-            if metodo_pagamento and str(metodo_pagamento).strip().lower() == 'dinheiro':
-                if recebido is not None:
-                    story.append(Paragraph(f"Recebido: €{float(recebido):.2f}", receipt_style))
-                if troco is not None:
-                    story.append(Paragraph(f"Troco: €{float(troco):.2f}", receipt_style))
+                # título
+                story.append(Paragraph(titulo_text, title_style))
+                story.append(Paragraph(titulo_text2, title_style))
                 story.append(Spacer(1, 2 * mm))
-        except Exception:
-            pass
 
-        # adicionar PageBreak entre bilhetes (não após o último)
-        if idx != len(bilhetes) - 1:
-            story.append(PageBreak())
+                # preço
+                story.append(Paragraph(f"Preço: {TICKET_PRICE:.2f}€", title_style))
+                story.append(Spacer(1, 2 * mm))
+
+                # imagem.png logo
+                if imagem_exists and imagem_h_pt > 0:
+                    try:
+                        img = Image(imagem_path, width=imagem_w_pt, height=imagem_h_pt)
+                        img.hAlign = 'CENTER'
+                        story.append(img)
+                        story.append(Spacer(1, 2 * mm))
+                    except Exception:
+                        pass
+
+                # data/hora e mensagem
+                story.append(Paragraph(f"Data/Hora: {data_hora}", small_style))
+                story.append(Spacer(1, 2 * mm))
+
+                try:
+                    story.append(Paragraph(f"Donativo sem contrapartida nos termos do artigo 61 do EBF", small_style))
+                    story.append(Spacer(1, 2 * mm))
+                    story.append(Spacer(1, 2 * mm))
+                except Exception:
+                    pass
+
+                # método de pagamento
+                try:
+                    if metodo_pagamento:
+                        story.append(Paragraph(f"Pagamento: {metodo_pagamento}", receipt_style))
+                    # se pagamento em numerário e valores fornecidos, mostrar recebido e troco
+                    if metodo_pagamento and str(metodo_pagamento).strip().lower() == 'dinheiro':
+                        if recebido is not None:
+                            story.append(Paragraph(f"Recebido: €{float(recebido):.2f}", receipt_style))
+                        if troco is not None:
+                            story.append(Paragraph(f"Troco: €{float(troco):.2f}", receipt_style))
+                        story.append(Spacer(1, 2 * mm))
+                except Exception:
+                    pass
+
+                # adicionar PageBreak entre bilhetes (não após o último)
+                if idx != len(bilhetes) - 1:
+                    story.append(PageBreak())
+    except Exception:
+        # Em caso de erro na formatação do PDF, garantir que continuamos e tentamos gerar o que for possível
+        pass
 
     # gerar PDF com páginas do mesmo tamanho
     doc = SimpleDocTemplate(filename, pagesize=(width_pt, height_pt),
@@ -397,6 +465,27 @@ class DatabaseManager:
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes))
         self.conn.commit()
+
+    def atualizar_anotacoes_por_numero(self, numero_bilhete, novo_texto):
+        """Anexa (ou define) o texto de anotacoes para o registo mais recente com o numero_bilhete.
+
+        Retorna True se actualizado com sucesso, False caso contrario.
+        """
+        try:
+            self.cursor.execute("SELECT id, anotacoes FROM registos WHERE numero_bilhete = ? ORDER BY id DESC LIMIT 1", (numero_bilhete,))
+            row = self.cursor.fetchone()
+            if not row:
+                return False
+            rid, existing = row
+            if existing and existing.strip():
+                combinado = f"{existing} | {novo_texto}"
+            else:
+                combinado = novo_texto
+            self.cursor.execute("UPDATE registos SET anotacoes = ? WHERE id = ?", (combinado, rid))
+            self.conn.commit()
+            return True
+        except Exception:
+            return False
 
     def ultimo_numero_bilhete(self):
         self.cursor.execute("SELECT numero_bilhete FROM registos ORDER BY id DESC LIMIT 1")
@@ -1114,39 +1203,71 @@ class JanelaPrincipal:
         try:
             total_price = len(bilhetes) * TICKET_PRICE
             metodo_norm = (metodo_pagamento or "").strip().lower()
+            # Se quantidade > 1, vamos criar apenas um bilhete que indica a quantidade
+            agrupado = len(bilhetes) > 1
             if metodo_norm and metodo_norm != 'dinheiro':
                 # pagamento por cartão: gravar registos e gerar PDF sem pedir valor recebido
                 try:
-                    for numero in bilhetes:
+                    if agrupado:
+                        # gravar individualmente cada número no BD, mas imprimir apenas um bilhete com a quantidade
+                        for numero in bilhetes:
+                            try:
+                                self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                            except Exception:
+                                pass
+                        # Anexar quantidade nas anotações do primeiro bilhete para exibição
                         try:
-                            self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                            self.db.atualizar_anotacoes_por_numero(bilhetes[0], f"Qtd:{len(bilhetes)}")
                         except Exception:
                             pass
-                    try:
-                        self.atualizar_tabela()
-                        self._atualizar_status()
-                    except Exception:
-                        pass
-                    try:
-                        messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
-                        self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
-                    except Exception:
-                        pass
-                    try:
-                        imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento)
-                    except Exception as e:
-                        print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
+                        try:
+                            self.atualizar_tabela()
+                            self._atualizar_status()
+                        except Exception:
+                            pass
+                        try:
+                            # mensagem de sucesso (listar primeiros/mostrar contagem)
+                            messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhetes:\n{', '.join(bilhetes)}\n\nSerá impresso 1 bilhete com quantidade {len(bilhetes)}.")
+                            self._set_status(f"{len(bilhetes)} bilhetes registados. Impresso 1 bilhete com quantidade.")
+                        except Exception:
+                            pass
+                        try:
+                            imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, quantidade=len(bilhetes))
+                        except Exception as e:
+                            print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
+                    else:
+                        # única entrada: inserir normalmente
+                        for numero in bilhetes:
+                            try:
+                                self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                            except Exception:
+                                pass
+                        try:
+                            self.atualizar_tabela()
+                            self._atualizar_status()
+                        except Exception:
+                            pass
+                        try:
+                            messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
+                            self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
+                        except Exception:
+                            pass
+                        try:
+                            imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento)
+                        except Exception as e:
+                            print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
                 except Exception as e:
                     messagebox.showerror("Erro", f"Erro ao gravar registos:\n{e}")
             else:
                 # pagamento em numerário: pedir valor recebido via popup
+                # passar informação de quantidade para que o popup grave agrupado se necessário
                 self._pedir_pagamento_e_imprimir(bilhetes, data_hora, total_price,
-                                                 nacionalidade, metodo_pagamento, fatura, contribuinte, anotacoes)
+                                                 nacionalidade, metodo_pagamento, fatura, contribuinte, anotacoes, quantidade=len(bilhetes))
         except Exception as e:
             print(f"Erro ao iniciar fluxo de pagamento: {e}")
 
     def _pedir_pagamento_e_imprimir(self, bilhetes, data_hora, total_price,
-                                    nacionalidade=None, metodo_pagamento=None, fatura=None, contribuinte=None, anotacoes=None):
+                                    nacionalidade=None, metodo_pagamento=None, fatura=None, contribuinte=None, anotacoes=None, quantidade=1):
         """Abre um popup modal para introduzir o valor recebido pelo cliente, mostra o troco e confirma antes de gerar o PDF."""
         popup = tk.Toplevel(self.root)
         popup.title("Pagamento")
@@ -1200,12 +1321,22 @@ class JanelaPrincipal:
             popup.destroy()
             # após confirmação, gravar os registos no BD, atualizar UI e gerar PDF
             try:
-                for numero in bilhetes:
+                # gravar individualmente cada número no BD (mesmo que a impressão seja agrupada)
+                try:
+                    for numero in bilhetes:
+                        try:
+                            self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                        except Exception:
+                            # continuar a tentar inserir outros bilhetes
+                            pass
+                    # Anexar quantidade nas anotações do primeiro bilhete para exibição
                     try:
-                        self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                        if quantidade and int(quantidade) > 1:
+                            self.db.atualizar_anotacoes_por_numero(bilhetes[0], f"Qtd:{int(quantidade)}")
                     except Exception:
-                        # continuar a tentar inserir outros bilhetes
                         pass
+                except Exception:
+                    pass
                 # limpar campos e atualizar
                 try:
                     self.combo_nacionalidade.set("Português")
@@ -1240,12 +1371,20 @@ class JanelaPrincipal:
 
                 # informar sucesso e gerar PDF
                 try:
-                    messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
-                    self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
+                    # mensagem de sucesso e resumo
+                    if quantidade and int(quantidade) > 1:
+                        messagebox.showinfo("Sucesso", f"Foram registados {int(quantidade)} bilhetes:\n{', '.join(bilhetes)}\n\nSerá impresso 1 bilhete com quantidade {int(quantidade)}.")
+                        self._set_status(f"{int(quantidade)} bilhetes registados. Impresso 1 bilhete com quantidade.")
+                    else:
+                        messagebox.showinfo("Sucesso", f"Foram registados {len(bilhetes)} bilhete(s):\n{', '.join(bilhetes)}")
+                        self._set_status(f"{len(bilhetes)} bilhete(s) registado(s).")
                 except Exception:
                     pass
                 try:
-                    imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco)
+                    if quantidade and int(quantidade) > 1:
+                        imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco, quantidade=quantidade)
+                    else:
+                        imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco)
                 except Exception as e:
                     print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
             except Exception as e:
