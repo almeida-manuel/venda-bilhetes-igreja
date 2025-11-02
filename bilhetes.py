@@ -673,6 +673,17 @@ class JanelaPrincipal:
                                command=self._popup_trocar_assistente)
         btn_trocar.pack(side="left")
 
+        # Botão único para registar entrada/saída do organista (toggle)
+        self.btn_organista = tk.Button(user_frame, text="Registar Entrada Organista",
+                                       font=AF(9),
+                                       bg="#48bb78", fg="white",
+                                       activebackground="#38a169",
+                                       activeforeground="white",
+                                       relief="flat",
+                                       padx=10, pady=4,
+                                       command=self._on_click_organista_toggle)
+        self.btn_organista.pack(side="left", padx=(8, 4))
+
         # Container principal
         # Container principal com scroll (garante que todo o conteúdo fica acessível em ecrãs pequenos)
         container_outer = tk.Frame(self.root)
@@ -829,7 +840,7 @@ class JanelaPrincipal:
         # Linha abaixo dos botões: registo de pessoas que não entraram
         try:
             reg_row = line + 1
-            tk.Label(form_container, text="Registar Não Entraram:", font=AF(10, "bold"), bg="white", fg="#4a5568").grid(row=reg_row, column=0, sticky="w", pady=8, padx=(0,10))
+            tk.Label(form_container, text="Registar Não Entram:", font=AF(10, "bold"), bg="white", fg="#4a5568").grid(row=reg_row, column=0, sticky="w", pady=8, padx=(0,10))
             self.spin_reg_nao_entraram = ttk.Spinbox(form_container, from_=1, to=50, width=10, font=AF(10))
             self.spin_reg_nao_entraram.set(1)
             self.spin_reg_nao_entraram.grid(row=reg_row, column=1, sticky="w", pady=8)
@@ -838,14 +849,14 @@ class JanelaPrincipal:
                 # impedir registos após o dia estar fechado
                 try:
                     if getattr(self, 'dia_fechado', False):
-                        messagebox.showwarning("Aviso", "O dia já está fechado. Não é possível registar mais 'Não Entraram'.")
+                        messagebox.showwarning("Aviso", "O dia já está fechado. Não é possível registar mais 'Não Entram'.")
                         return
                 except Exception:
                     pass
                 try:
                     cnt = int(self.spin_reg_nao_entraram.get())
                 except Exception:
-                    messagebox.showwarning("Aviso", "Quantidade inválida para registo de Não Entraram.")
+                    messagebox.showwarning("Aviso", "Quantidade inválida para registo de Não Entram.")
                     return
                 if cnt <= 0:
                     messagebox.showwarning("Aviso", "Quantidade deve ser pelo menos 1.")
@@ -867,9 +878,9 @@ class JanelaPrincipal:
                     except Exception:
                         pass
                 except Exception:
-                    messagebox.showwarning("Aviso", "Falha ao registar Não Entraram.")
+                    messagebox.showwarning("Aviso", "Falha ao registar Não Entram.")
 
-            btn_reg_nao = tk.Button(form_container, text="Registar Não Entrou(s)", font=AF(10), bg="#f56565", fg="white", activebackground="#c53030", relief="flat", command=_on_registar_nao_entraram)
+            btn_reg_nao = tk.Button(form_container, text="❌ Registar Não Entram", font=AF(10), bg="#f56565", fg="white", activebackground="#c53030", relief="flat", command=_on_registar_nao_entraram)
             # colocar o botão abaixo da spinbox (na próxima linha, mesma coluna da spinbox)
             btn_reg_nao.grid(row=reg_row+1, column=1, sticky="w", pady=(4, 0))
             # expor como atributo para poder ser desativado ao fechar o dia
@@ -1016,6 +1027,11 @@ class JanelaPrincipal:
         self.status_var.set("Sistema pronto - Aguardando ações")
         status_label = tk.Label(status_bar, textvariable=self.status_var, font=AF(9), bg="#e2e8f0", fg="#4a5568")
         status_label.pack(side="left", padx=15)
+        # Atualizar estado do botão do organista (entrada/saída) conforme eventos existentes para hoje
+        try:
+            self._update_organista_button_state()
+        except Exception:
+            pass
 
     # --------------------------
     # FUNÇÕES DE AÇÃO
@@ -1049,6 +1065,105 @@ class JanelaPrincipal:
             self._set_status(f"Assistente alterado para: {self.assistente}")
 
         ttk.Button(popup, text="Confirmar", command=confirmar).pack(pady=(0, 10))
+
+    def _popup_registrar_organista(self, event_type):
+        """Mostra popup para pedir o nome do organista (opcional nota) e grava evento ('organista_entrada' ou 'organista_saida')."""
+        if self.dia_fechado:
+            messagebox.showwarning("Aviso", "O dia já está fechado. Não é possível registar eventos.")
+            return
+        popup = tk.Toplevel(self.root)
+        popup.title("Registo Organista")
+        popup.geometry("380x180")
+        popup.transient(self.root)
+        popup.grab_set()
+
+        tk.Label(popup, text="Nome do Organista:", font=AF(10)).pack(anchor='w', padx=12, pady=(10, 2))
+        nome_var = tk.StringVar()
+        nome_entry = ttk.Entry(popup, textvariable=nome_var, width=40)
+        nome_entry.pack(padx=12)
+        nome_entry.focus()
+
+        tk.Label(popup, text="Notas (opcional):", font=AF(10)).pack(anchor='w', padx=12, pady=(8, 2))
+        notas_var = tk.StringVar()
+        notas_entry = ttk.Entry(popup, textvariable=notas_var, width=40)
+        notas_entry.pack(padx=12)
+
+        def confirmar():
+            organista = nome_var.get().strip() or "Organista"
+            notas = notas_var.get().strip() or None
+            ts = agora_str()
+            # juntar nome e notas num único campo notes (se houver notas, separar por '|')
+            if notas:
+                notes_field = f"{organista}|{notas}"
+            else:
+                notes_field = organista
+            try:
+                self.db.inserir_evento(event_type, count=None, assistente=self.assistente, notes=notes_field, timestamp=ts)
+                try:
+                    hora = ts.split(' ')[1]
+                except Exception:
+                    hora = ts
+                tipo = 'Entrada' if event_type == 'organista_entrada' else 'Saída'
+                messagebox.showinfo("Registo Efetuado", f"{tipo} do organista '{organista}' registada às {hora}")
+                self._set_status(f"Organista {tipo.lower()} registada: {organista} às {hora}")
+            except Exception as e:
+                messagebox.showerror("Erro", f"Falha ao registar evento do organista: {e}")
+            finally:
+                try:
+                    popup.destroy()
+                except Exception:
+                    pass
+                try:
+                    # atualizar o texto do botão para refletir estado atual (entrada vs saída)
+                    self._update_organista_button_state()
+                except Exception:
+                    pass
+
+        btns = tk.Frame(popup)
+        btns.pack(pady=(12, 8))
+        ttk.Button(btns, text="Confirmar", command=confirmar).pack(side='left', padx=8)
+        ttk.Button(btns, text="Cancelar", command=popup.destroy).pack(side='left')
+
+    def _registrar_entrada_organista(self):
+        self._popup_registrar_organista('organista_entrada')
+
+    def _registrar_saida_organista(self):
+        self._popup_registrar_organista('organista_saida')
+
+    def _on_click_organista_toggle(self):
+        """Decide automaticamente se o próximo evento deve ser entrada ou saída com base nos registos de hoje."""
+        try:
+            entradas = self.db.obter_eventos_por_tipo('organista_entrada') or []
+            saidas = self.db.obter_eventos_por_tipo('organista_saida') or []
+            # Se houve mais entradas do que saídas, aguardamos uma saída
+            if len(entradas) > len(saidas):
+                ev = 'organista_saida'
+            else:
+                ev = 'organista_entrada'
+        except Exception:
+            ev = 'organista_entrada'
+        self._popup_registrar_organista(ev)
+
+    def _update_organista_button_state(self):
+        """Atualiza o rótulo do botão do organista consoante os eventos registados hoje."""
+        try:
+            entradas = self.db.obter_eventos_por_tipo('organista_entrada') or []
+            saidas = self.db.obter_eventos_por_tipo('organista_saida') or []
+            # Se houve mais entradas do que saídas, o próximo passo é registar a saída
+            if len(entradas) > len(saidas):
+                texto = "❌ Registar Saída Organista"
+                bg = "#f56565"        # vermelho
+                active_bg = "#c53030"
+            else:
+                texto = "✓ Registar Entrada Organista"
+                bg = "#48bb78"        # verde
+                active_bg = "#38a169"
+            try:
+                self.btn_organista.config(text=texto, bg=bg, activebackground=active_bg)
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def _mostrar_detalhes(self, event=None):
         # mostra um popup com os detalhes da linha (especialmente as anotações completas)
@@ -1563,6 +1678,37 @@ class JanelaPrincipal:
                     ws.append(["Total Não Entraram:", total_nao_entraram])
                 except Exception:
                     pass
+        except Exception:
+            pass
+        # Incluir registos de entrada/saída do organista
+        try:
+            entradas = self.db.obter_eventos_por_tipo('organista_entrada') or []
+            saidas = self.db.obter_eventos_por_tipo('organista_saida') or []
+            organista_events = list(entradas) + list(saidas)
+            # ordenar por timestamp asc (opcional) - eventos já filtrados por dia na query
+            if organista_events:
+                ws.append([])
+                ws.append(["Registos Organista:"])
+                ws.append(["Hora", "Registrado Por", "Evento", "Organista", "Notas"])
+                # eventos is list of (id, timestamp, event_type, count, assistente, notes)
+                for ev in reversed(organista_events):
+                    _, ts, ev_type, cnt, registrador, notes = ev
+                    try:
+                        hora = ts.split(' ')[1]
+                    except Exception:
+                        hora = ts
+                    evento_nome = 'Entrada' if ev_type == 'organista_entrada' else 'Saída' if ev_type == 'organista_saida' else ev_type
+                    organista_nome = ''
+                    notas_extra = ''
+                    try:
+                        if notes:
+                            parts = str(notes).split('|', 1)
+                            organista_nome = parts[0]
+                            if len(parts) > 1:
+                                notas_extra = parts[1]
+                    except Exception:
+                        organista_nome = str(notes)
+                    ws.append([hora, registrador or "", evento_nome, organista_nome or "", notas_extra or ""])
         except Exception:
             pass
         # incluir anotações finais no Excel: uma linha após os totais e, opcionalmente, numa aba separada
