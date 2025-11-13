@@ -1011,12 +1011,37 @@ class JanelaPrincipal:
         h_scroll = ttk.Scrollbar(table_content, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=v_scroll.set, xscrollcommand=h_scroll.set)
         
-        self.tree.pack(side="left", fill="both", expand=True)
-        v_scroll.pack(side="right", fill="y")
-        h_scroll.pack(side="bottom", fill="x")
+        # Usar grid para garantir que a scrollbar horizontal fique sempre visível
+        # e que os componentes redimensionem corretamente dentro do frame
+        table_content.grid_rowconfigure(0, weight=1)
+        table_content.grid_columnconfigure(0, weight=1)
+        self.tree.grid(row=0, column=0, sticky='nsew')
+        v_scroll.grid(row=0, column=1, sticky='ns')
+        h_scroll.grid(row=1, column=0, columnspan=2, sticky='ew')
 
         # Bind duplo-clique para mostrar detalhes (anotações completas)
         self.tree.bind('<Double-1>', self._mostrar_detalhes)
+
+        # Permitir scroll horizontal usando Shift + roda do rato (melhora usabilidade em colunas largas)
+        def _on_shift_mousewheel(event):
+            try:
+                if sys.platform == "darwin":
+                    delta = -1 * int(event.delta)
+                else:
+                    delta = -1 * int(event.delta / 120)
+            except Exception:
+                delta = 0
+            if delta:
+                try:
+                    self.tree.xview_scroll(delta, "units")
+                except Exception:
+                    pass
+
+        # Bind globalmente para funcionar mesmo quando o foco não está exactamente na tree
+        self.tree.bind_all("<Shift-MouseWheel>", _on_shift_mousewheel)
+        # Suporte para sistemas que usam Button-4/Button-5
+        self.tree.bind_all("<Shift-Button-4>", lambda e: self.tree.xview_scroll(-1, "units"))
+        self.tree.bind_all("<Shift-Button-5>", lambda e: self.tree.xview_scroll(1, "units"))
 
         # Status bar
         status_bar = tk.Frame(self.root, bg="#e2e8f0", height=30)
