@@ -9,10 +9,52 @@ import shutil
 import os
 import sys
 import tkinter.font as tkfont
+import json
 
 # Valores de configuração
 TICKET_PRICE = 2.0  # preço por bilhete em euros
 INITIAL_CASH = 100.0  # caixa inicial em euros
+
+# Config file for persisting settings (preço atual)
+def _get_config_dir():
+    """Return a writable directory for app config.
+
+    On Windows prefer %APPDATA%\venda-bilhetes-igreja. On other systems use ~/.config/venda-bilhetes-igreja
+    """
+    try:
+        if sys.platform.startswith('win'):
+            base = os.getenv('APPDATA') or os.path.expanduser('~')
+            cfg_dir = os.path.join(base, 'venda-bilhetes-igreja')
+        else:
+            base = os.getenv('XDG_CONFIG_HOME') or os.path.join(os.path.expanduser('~'), '.config')
+            cfg_dir = os.path.join(base, 'venda-bilhetes-igreja')
+        os.makedirs(cfg_dir, exist_ok=True)
+        return cfg_dir
+    except Exception:
+        # fallback to current working directory
+        return os.path.abspath('.')
+
+CONFIG_FILE = os.path.join(_get_config_dir(), 'config.json')
+
+def load_config():
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def save_config(cfg: dict):
+    try:
+        # ensure dir exists
+        try:
+            os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        except Exception:
+            pass
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return True
+    except Exception:
+        return False
 
 # --- Impressão térmica (Windows, impressora USB comum) ---
 try:
@@ -78,7 +120,7 @@ def _send_raw_to_printer(printer_name, data_bytes):
             pass
 
 
-def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagamento=None, recebido=None, troco=None, quantidade=None):
+def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagamento=None, recebido=None, troco=None, quantidade=None, preco=None):
     """Gera um único PDF com uma página por bilhete (80mm largura x altura dinâmica por página).
     Cada bilhete contém: título, imagem.png (se existir) logo a seguir ao título, nº do bilhete,
     data/hora e logo.png (se existir). Depois tenta enviar o PDF para a impressora predefinida.
@@ -186,12 +228,14 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagam
             story.append(Paragraph(titulo_text2, title_style))
             story.append(Spacer(1, 2 * mm))
 
-            # preço total
+            # preço total (usar preço fornecido, se houver)
             try:
-                total_price = float(quantidade) * TICKET_PRICE
+                unit = float(preco) if preco is not None else TICKET_PRICE
+                total_price = float(quantidade) * unit
                 story.append(Paragraph(f"Preço total: €{total_price:.2f}", title_style))
             except Exception:
-                story.append(Paragraph(f"Preço: {TICKET_PRICE:.2f}€", title_style))
+                unit = float(preco) if preco is not None else TICKET_PRICE
+                story.append(Paragraph(f"Preço: {unit:.2f}€", title_style))
             story.append(Spacer(1, 2 * mm))
 
             # imagem.png logo
@@ -249,8 +293,12 @@ def imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, assistente, metodo_pagam
                 story.append(Paragraph(titulo_text2, title_style))
                 story.append(Spacer(1, 2 * mm))
 
-                # preço
-                story.append(Paragraph(f"Preço: {TICKET_PRICE:.2f}€", title_style))
+                # preço (usar preço fornecido, se houver)
+                try:
+                    unit = float(preco) if preco is not None else TICKET_PRICE
+                except Exception:
+                    unit = TICKET_PRICE
+                story.append(Paragraph(f"Preço: {unit:.2f}€", title_style))
                 story.append(Spacer(1, 2 * mm))
 
                 # imagem.png logo
@@ -386,6 +434,7 @@ class DatabaseManager:
     def _criar_tabela(self):
         # Cria tabela com coluna 'anotacoes' (opcional). Se a tabela já existir sem a coluna,
         # fazemos uma migração simples adicionando a coluna.
+        # incluir coluna 'preco' para armazenar o preço unitário do bilhete ao registar
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS registos (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -396,6 +445,7 @@ class DatabaseManager:
                 metodo_pagamento TEXT,
                 fatura TEXT,
                 contribuinte TEXT,
+                preco REAL,
                 anotacoes TEXT
             )
         """)
@@ -405,9 +455,28 @@ class DatabaseManager:
         try:
             self.cursor.execute("PRAGMA table_info(registos)")
             cols = [r[1] for r in self.cursor.fetchall()]
+            # adicionar colunas ausentes por migração simples
             if 'anotacoes' not in cols:
                 self.cursor.execute("ALTER TABLE registos ADD COLUMN anotacoes TEXT")
                 self.conn.commit()
+                cols.append('anotacoes')
+            if 'preco' not in cols:
+                try:
+                    self.cursor.execute("ALTER TABLE registos ADD COLUMN preco REAL")
+                    self.conn.commit()
+                except Exception:
+                    pass
+            # Se houver linhas sem preco (migração de versões antigas), preencher com preço padrão do config ou constante
+            try:
+                cfg = load_config()
+                default_price = float(cfg.get('ticket_price', TICKET_PRICE))
+            except Exception:
+                default_price = TICKET_PRICE
+            try:
+                self.cursor.execute("UPDATE registos SET preco = ? WHERE preco IS NULL", (default_price,))
+                self.conn.commit()
+            except Exception:
+                pass
         except Exception:
             # Se qualquer erro ocorrer aqui, não queremos quebrar a inicialização; seguir em frente
             pass
@@ -460,10 +529,21 @@ class DatabaseManager:
             return False
 
     def inserir_registo(self, data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes=None):
+        # manter compatibilidade: aceitar um parametro opcional 'preco' via kwargs se fornecido
+        preco = None
+        # detectar se 'anotacoes' foi passado como positional (legacy) ou se foi fornecido preço via keyword
+        # chamada típica: inserir_registo(..., anotacoes)
+        # Para chamadas internas novas, passamos preco como a última positional ou via keyword
+        try:
+            # tentar obter de self if foi anexado temporariamente (não ideal, mas compatível)
+            preco = getattr(self, '_pending_preco', None)
+        except Exception:
+            preco = None
+        # executar insert incluindo preco
         self.cursor.execute("""
-            INSERT INTO registos (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes))
+            INSERT INTO registos (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, preco, anotacoes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, preco, anotacoes))
         self.conn.commit()
 
     def atualizar_anotacoes_por_numero(self, numero_bilhete, novo_texto):
@@ -497,7 +577,7 @@ class DatabaseManager:
             dia_str = hoje_str()
         # Assumimos data_hora armazenada como 'YYYY-MM-DD HH:MM:SS'
         self.cursor.execute("""
-            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes
+            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, preco, anotacoes
             FROM registos
             WHERE date(data_hora) = ?
             ORDER BY id DESC
@@ -507,7 +587,7 @@ class DatabaseManager:
     def procurar_por_bilhete(self, termo):
         termo_like = f"%{termo}%"
         self.cursor.execute("""
-            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, anotacoes
+            SELECT data_hora, assistente, nacionalidade, numero_bilhete, metodo_pagamento, fatura, contribuinte, preco, anotacoes
             FROM registos
             WHERE numero_bilhete LIKE ?
             ORDER BY id DESC
@@ -607,6 +687,13 @@ class JanelaPrincipal:
     def __init__(self, assistente_nome):
         self.assistente = assistente_nome
         self.dia_fechado = False
+
+        # carregar configuração (preço persistido)
+        try:
+            cfg = load_config()
+            self.ticket_price = float(cfg.get('ticket_price', TICKET_PRICE))
+        except Exception:
+            self.ticket_price = TICKET_PRICE
 
         # DB
         try:
@@ -990,20 +1077,21 @@ class JanelaPrincipal:
         table_content = tk.Frame(table_frame, bg="white")
         table_content.pack(expand=True, fill="both", padx=2, pady=2)
 
-        # Treeview (registos do dia)
-        cols = ("data_hora", "assistente", "nacionalidade", "numero_bilhete", "metodo_pagamento", "fatura", "contribuinte", "anotacoes")
+        # Treeview (registos do dia) - incluir coluna 'preco' (não remove a coluna 'anotacoes' que fica por fim)
+        cols = ("data_hora", "assistente", "nacionalidade", "numero_bilhete", "metodo_pagamento", "fatura", "contribuinte", "preco", "anotacoes")
         self.tree = ttk.Treeview(table_content, columns=cols, show="headings", height=15)
         
         # Configurar colunas
         # Map some internal column names to nicer display headings
         display_names = {
-            'fatura': 'Recibo'
+            'fatura': 'Recibo',
+            'preco': 'Preço (€)'
         }
         for c in cols:
             heading = display_names.get(c, c.replace("_", " ").capitalize())
             self.tree.heading(c, text=heading)
             # aumentar largura da coluna 'anotacoes'
-            col_width = 220 if c == 'anotacoes' else 120
+            col_width = 220 if c == 'anotacoes' else 90 if c == 'preco' else 120
             self.tree.column(c, width=col_width, anchor="center")
         
         # Scrollbars
@@ -1055,6 +1143,14 @@ class JanelaPrincipal:
         # Atualizar estado do botão do organista (entrada/saída) conforme eventos existentes para hoje
         try:
             self._update_organista_button_state()
+        except Exception:
+            pass
+
+        # Atalho para alterar o preço dos bilhetes: Ctrl+Shift+P
+        try:
+            # vincular tanto P maiúsculo como p minúsculo para compatibilidade
+            self.root.bind_all('<Control-Shift-P>', lambda e: self._on_shortcut_change_price())
+            self.root.bind_all('<Control-Shift-p>', lambda e: self._on_shortcut_change_price())
         except Exception:
             pass
 
@@ -1148,6 +1244,67 @@ class JanelaPrincipal:
         btns.pack(pady=(12, 8))
         ttk.Button(btns, text="Confirmar", command=confirmar).pack(side='left', padx=8)
         ttk.Button(btns, text="Cancelar", command=popup.destroy).pack(side='left')
+
+    def _on_shortcut_change_price(self, event=None):
+        """Abre um popup modal para alterar o preço por bilhete via atalho Ctrl+Shift+P.
+
+        Valida o valor (float > 0), atualiza a variável global TICKET_PRICE e recalcula as estatísticas.
+        """
+        try:
+            if getattr(self, 'dia_fechado', False):
+                messagebox.showwarning("Aviso", "O dia já está fechado. Não é possível alterar o preço.")
+                return
+        except Exception:
+            pass
+
+        popup = tk.Toplevel(self.root)
+        popup.title("Alterar Preço do Bilhete")
+        popup.geometry("360x140")
+        popup.transient(self.root)
+        popup.grab_set()
+
+        tk.Label(popup, text="Novo preço por bilhete (€):", font=AF(10)).pack(anchor='w', padx=12, pady=(12, 6))
+        price_var = tk.StringVar()
+        # preencher com o preço atual (valor carregado em self.ticket_price)
+        try:
+            price_var.set(str(float(getattr(self, 'ticket_price', TICKET_PRICE))))
+        except Exception:
+            price_var.set('0.00')
+
+        entry = ttk.Entry(popup, textvariable=price_var, width=20, font=AF(10))
+        entry.pack(padx=12)
+        entry.focus()
+
+        def confirmar():
+            s = price_var.get().strip().replace(',', '.')
+            try:
+                val = float(s)
+                if val <= 0:
+                    raise ValueError()
+            except Exception:
+                messagebox.showwarning("Aviso", "Introduza um preço válido (ex.: 2.00).")
+                return
+            # actualizar preço atual em memória e persistir no ficheiro de configuração
+            try:
+                self.ticket_price = val
+                cfg = load_config()
+                cfg['ticket_price'] = val
+                save_config(cfg)
+            except Exception:
+                pass
+            try:
+                # recalcular e atualizar a UI que depende do preço
+                self._atualizar_estatisticas()
+                self._set_status(f"Preço por bilhete alterado para €{val:.2f}")
+            except Exception:
+                pass
+            popup.destroy()
+
+        btns = tk.Frame(popup)
+        btns.pack(pady=(10, 8))
+        ttk.Button(btns, text="Confirmar", command=confirmar).pack(side='left', padx=8)
+        ttk.Button(btns, text="Cancelar", command=popup.destroy).pack(side='left')
+        popup.wait_window()
 
     def _registrar_entrada_organista(self):
         self._popup_registrar_organista('organista_entrada')
@@ -1341,7 +1498,7 @@ class JanelaPrincipal:
         # - se for 'Dinheiro' abrir popup para introduzir valor recebido e calcular troco
         # - se for outro método (ex. cartão/multibanco) gravar diretamente e gerar o PDF
         try:
-            total_price = len(bilhetes) * TICKET_PRICE
+            total_price = len(bilhetes) * getattr(self, 'ticket_price', TICKET_PRICE)
             metodo_norm = (metodo_pagamento or "").strip().lower()
             # Se quantidade > 1, vamos criar apenas um bilhete que indica a quantidade
             agrupado = len(bilhetes) > 1
@@ -1350,9 +1507,43 @@ class JanelaPrincipal:
                 try:
                     if agrupado:
                         # gravar individualmente cada número no BD, mas imprimir apenas um bilhete com a quantidade
+                        # garantir que gravamos o preço unitário do bilhete para cada registo
+                        try:
+                            self.db._pending_preco = getattr(self, 'ticket_price', TICKET_PRICE)
+                        except Exception:
+                            pass
+                        try:
+                            self.db._pending_preco = getattr(self, 'ticket_price', TICKET_PRICE)
+                        except Exception:
+                            pass
+                        try:
+                            self.db._pending_preco = getattr(self, 'ticket_price', TICKET_PRICE)
+                        except Exception:
+                            pass
                         for numero in bilhetes:
                             try:
                                 self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                            except Exception:
+                                pass
+                        try:
+                            delattr(self.db, '_pending_preco')
+                        except Exception:
+                            try:
+                                del self.db._pending_preco
+                            except Exception:
+                                pass
+                        try:
+                            delattr(self.db, '_pending_preco')
+                        except Exception:
+                            try:
+                                del self.db._pending_preco
+                            except Exception:
+                                pass
+                        try:
+                            delattr(self.db, '_pending_preco')
+                        except Exception:
+                            try:
+                                del self.db._pending_preco
                             except Exception:
                                 pass
                         # Anexar quantidade nas anotações do primeiro bilhete para exibição
@@ -1372,14 +1563,25 @@ class JanelaPrincipal:
                         except Exception:
                             pass
                         try:
-                            imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, quantidade=len(bilhetes))
+                            imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, quantidade=len(bilhetes), preco=getattr(self, 'ticket_price', TICKET_PRICE))
                         except Exception as e:
                             print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
                     else:
                         # única entrada: inserir normalmente
+                        try:
+                            self.db._pending_preco = getattr(self, 'ticket_price', TICKET_PRICE)
+                        except Exception:
+                            pass
                         for numero in bilhetes:
                             try:
                                 self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
+                            except Exception:
+                                pass
+                        try:
+                            delattr(self.db, '_pending_preco')
+                        except Exception:
+                            try:
+                                del self.db._pending_preco
                             except Exception:
                                 pass
                         try:
@@ -1393,7 +1595,7 @@ class JanelaPrincipal:
                         except Exception:
                             pass
                         try:
-                            imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento)
+                            imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, preco=getattr(self, 'ticket_price', TICKET_PRICE))
                         except Exception as e:
                             print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
                 except Exception as e:
@@ -1463,11 +1665,22 @@ class JanelaPrincipal:
             try:
                 # gravar individualmente cada número no BD (mesmo que a impressão seja agrupada)
                 try:
+                    try:
+                        self.db._pending_preco = getattr(self, 'ticket_price', TICKET_PRICE)
+                    except Exception:
+                        pass
                     for numero in bilhetes:
                         try:
                             self.db.inserir_registo(data_hora, self.assistente, nacionalidade, numero, metodo_pagamento, fatura, contribuinte, anotacoes)
                         except Exception:
                             # continuar a tentar inserir outros bilhetes
+                            pass
+                    try:
+                        delattr(self.db, '_pending_preco')
+                    except Exception:
+                        try:
+                            del self.db._pending_preco
+                        except Exception:
                             pass
                     # Anexar quantidade nas anotações do primeiro bilhete para exibição
                     try:
@@ -1522,9 +1735,9 @@ class JanelaPrincipal:
                     pass
                 try:
                     if quantidade and int(quantidade) > 1:
-                        imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco, quantidade=quantidade)
+                        imprimir_bilhetes_multiplo_pdf([bilhetes[0]], data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco, quantidade=quantidade, preco=getattr(self, 'ticket_price', TICKET_PRICE))
                     else:
-                        imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco)
+                        imprimir_bilhetes_multiplo_pdf(bilhetes, data_hora, self.assistente, metodo_pagamento=metodo_pagamento, recebido=received, troco=troco, preco=getattr(self, 'ticket_price', TICKET_PRICE))
                 except Exception as e:
                     print(f"Erro ao gerar/mandar imprimir PDF dos bilhetes: {e}")
             except Exception as e:
@@ -1643,12 +1856,12 @@ class JanelaPrincipal:
         wb = Workbook()
         ws = wb.active
         ws.title = "Bilhetes do Dia"
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Recibo", "Contribuinte", "Anotações"]
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Número Bilhete", "Método Pagamento", "Recibo", "Contribuinte", "Preço", "Anotações"]
         ws.append(cabecalho)
         for col_num, _ in enumerate(cabecalho, 1):
             ws[f"{get_column_letter(col_num)}1"].font = Font(bold=True)
         for row in dados:
-            # row now includes anotacoes as last element
+            # row now includes preco before anotacoes
             ws.append([str(x) if x is not None else "" for x in row])
         # aplicar wrap na coluna 'Anotações' (última coluna)
         try:
@@ -1662,16 +1875,18 @@ class JanelaPrincipal:
         ws.append(["Total de Bilhetes Vendidos:", total])
         # Calcular e adicionar totais monetários ao Excel
         try:
-            cash_count = 0
-            card_count = 0
+            cash_amount = 0.0
+            card_amount = 0.0
             for row in dados:
                 metodo = (row[4] or "").strip().lower()
+                try:
+                    preco_val = float(row[7]) if row[7] is not None else float(getattr(self, 'ticket_price', TICKET_PRICE))
+                except Exception:
+                    preco_val = float(getattr(self, 'ticket_price', TICKET_PRICE))
                 if metodo == 'dinheiro':
-                    cash_count += 1
+                    cash_amount += preco_val
                 elif metodo.startswith('cart') or 'multibanco' in metodo or 'cartão' in metodo:
-                    card_count += 1
-            cash_amount = cash_count * TICKET_PRICE
-            card_amount = card_count * TICKET_PRICE
+                    card_amount += preco_val
             numerario_total = INITIAL_CASH + cash_amount
             caixa_total = numerario_total + card_amount
             ws.append(["Numerário:", f"€{numerario_total:.2f}"])
@@ -1786,7 +2001,7 @@ class JanelaPrincipal:
         elementos = []
         styles = getSampleStyleSheet()
         elementos.append(Paragraph(f"<b>Relatório de Bilhetes - {hoje}</b>", styles["Title"]))
-        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Recibo", "Contribuinte", "Anotações"]
+        cabecalho = ["Data/Hora", "Assistente", "Nacionalidade", "Nº Bilhete", "Pagamento", "Recibo", "Contribuinte", "Preço", "Anotações"]
         tabela_dados = [cabecalho]
         for row in dados:
             r = list(row)
@@ -1849,22 +2064,23 @@ class JanelaPrincipal:
             nat = row[2] or "Outros"
             summary[nat] = summary.get(nat, 0) + 1
 
-        # calcular totais por método de pagamento
+        # calcular totais por método de pagamento usando o preço armazenado por registo
         try:
-            cash_count = 0
-            card_count = 0
+            cash_amount = 0.0
+            card_amount = 0.0
             for row in dados:
                 metodo = (row[4] or "").strip().lower()
+                try:
+                    preco_val = float(row[7]) if row[7] is not None else float(getattr(self, 'ticket_price', TICKET_PRICE))
+                except Exception:
+                    preco_val = float(getattr(self, 'ticket_price', TICKET_PRICE))
                 if metodo == 'dinheiro':
-                    cash_count += 1
+                    cash_amount += preco_val
                 elif metodo.startswith('cart') or 'multibanco' in metodo or 'cartão' in metodo:
-                    card_count += 1
+                    card_amount += preco_val
         except Exception:
-            cash_count = 0
-            card_count = 0
-
-        cash_amount = cash_count * TICKET_PRICE
-        card_amount = card_count * TICKET_PRICE
+            cash_amount = 0.0
+            card_amount = 0.0
 
         # Numerário deve incluir o valor inicial da caixa
         numerario_total = INITIAL_CASH + cash_amount
