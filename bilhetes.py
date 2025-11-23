@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import sqlite3
 from datetime import datetime
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 import shutil
@@ -1812,6 +1812,11 @@ class JanelaPrincipal:
                 except Exception:
                     pass
             self.gerar_excel()
+            try:
+                # atualizar o relatório horário mestre ao fechar o dia
+                self.gerar_relatorio_horario()
+            except Exception:
+                pass
             self.criar_backup()
             self._set_status("Dia fechado. Relatórios gerados.")
 
@@ -1983,6 +1988,285 @@ class JanelaPrincipal:
             messagebox.showinfo("Excel Gerado", f"Arquivo Excel criado: {filename}")
         except Exception as e:
             messagebox.showerror("Erro Excel", f"Falha ao criar Excel:\n{e}")
+
+    def gerar_relatorio_horario(self):
+        """Gera/atualiza `relatorios/estatisticas_horario.xlsx` com as informações pedidas pelo utilizador.
+
+        Para cada hora onde existam registos, escreve uma linha com:
+        - Dia (YYYY-MM-DD)
+        - Intervalo (HH:00-HH:59)
+        - Dia da semana (pt)
+        - Assistente (nome mais frequente na hora)
+        - Organista (S/N) — 'S' se existir evento 'organista_entrada' nessa hora
+        - Nacionalidades base e respetivas quantidades (formatadas)
+        - Outras nacionalidades e respetiva quantidade (formatadas)
+        - Não pagantes por hora (registos com preco == 0)
+        - Total de visitantes por hora (contagem de registos)
+
+        No final adiciona linhas de total do dia: total não pagantes e total visitantes.
+        """
+        from collections import Counter
+        from datetime import datetime
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+        hoje = hoje_str()
+        # mapa dia da semana em português
+        weekdays_pt = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
+
+        pasta = os.path.join("relatorios")
+        os.makedirs(pasta, exist_ok=True)
+        caminho = os.path.join(pasta, "estatisticas_horario.xlsx")
+
+        # definir nacionalidades base (consistente com a UI)
+        BASE_NACIONALIDADES = ["Português", "Brasileiro", "Espanhol", "Inglês", "Francês", "Italiano", "Asiático", "Alemão"]
+        base_lower = [b.lower() for b in BASE_NACIONALIDADES]
+
+        # obter todos os registos do dia para agrupar por hora
+        try:
+            self.db.cursor.execute(
+                "SELECT data_hora, assistente, nacionalidade, metodo_pagamento, preco FROM registos WHERE date(data_hora) = ? ORDER BY data_hora",
+                (hoje,)
+            )
+            rows = self.db.cursor.fetchall()
+        except Exception:
+            rows = []
+
+        # agrupar por hora
+        hora_groups = {}
+        for r in rows:
+            try:
+                dt = r[0]
+                hh = dt[11:13]  # 'YYYY-MM-DD HH:MM:SS'
+            except Exception:
+                continue
+            hora_groups.setdefault(hh, []).append({'data_hora': r[0], 'assistente': r[1], 'nacionalidade': r[2], 'metodo_pagamento': r[3], 'preco': r[4]})
+
+        # organista: marcar horas onde existe evento de entrada
+        organista_hours = set()
+        try:
+            eventos = self.db.obter_eventos_por_tipo('organista_entrada', hoje)
+            for ev in eventos:
+                ts = ev[1]  # timestamp
+                try:
+                    h = ts[11:13]
+                    organista_hours.add(h)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # obter eventos 'nao_entraram' por hora (estes são os "não pagantes" solicitados agora)
+        nao_entraram_by_hour = {}
+        try:
+            eventos_nao = self.db.obter_eventos_por_tipo('nao_entraram', hoje)
+            for ev in eventos_nao:
+                ts = ev[1]
+                cnt = int(ev[3] or 0)
+                try:
+                    h = ts[11:13]
+                    nao_entraram_by_hour[h] = nao_entraram_by_hour.get(h, 0) + cnt
+                except Exception:
+                    pass
+        except Exception:
+            nao_entraram_by_hour = {}
+
+        # abrir ou criar workbook
+        try:
+            if os.path.exists(caminho):
+                wb = load_workbook(caminho)
+                ws = wb.active
+            else:
+                wb = Workbook()
+                ws = wb.active
+                ws.title = 'Estatisticas_Horario'
+                # título e metadados
+                ws.append(["Estatísticas Horário"])
+
+                # cabeçalho da tabela
+                ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente", "Organista (S/N)", "Nacionalidades Base (contagens)", "Total Base", "Outras Nacionalidades (list)", "Total Outras", "Nao Pagantes Hora", "Total Visitantes Hora"])
+        except Exception:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = 'Estatisticas_Horario'
+            ws.append(["Estatísticas Horário"])
+            ws.append([f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
+            ws.append([""])
+            ws.append(["Descrição das Colunas:"])
+            ws.append(["(ver descrições no topo do ficheiro)"])
+            ws.append([""])
+            ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente", "Organista (S/N)", "Nacionalidades Base (contagens)", "Total Base", "Outras Nacionalidades (list)", "Total Outras", "Nao Pagantes Hora", "Total Visitantes Hora"])
+
+        # remover linhas existentes do dia (para evitar duplicados ao re-fechar)
+        try:
+            to_delete = []
+            for row_idx in range(1, ws.max_row + 1):
+                try:
+                    cell = ws.cell(row=row_idx, column=1).value
+                    if cell == hoje:
+                        to_delete.append(row_idx)
+                except Exception:
+                    pass
+            for r in reversed(to_delete):
+                ws.delete_rows(r, 1)
+        except Exception:
+            pass
+
+        total_nao_pagantes_dia = sum(nao_entraram_by_hour.values())
+        total_visitantes_dia = 0
+
+        # identificar a linha do cabeçalho (primeira ocorrência do texto 'Intervalo')
+        header_row = None
+        for row_idx in range(1, ws.max_row + 1):
+            try:
+                if str(ws.cell(row=row_idx, column=1).value).strip().lower() == 'dia' and str(ws.cell(row=row_idx, column=2).value).strip().lower() in ('intervalo', 'intervalo'):
+                    header_row = row_idx
+                    break
+            except Exception:
+                continue
+        if header_row is None:
+            header_row = ws.max_row + 1
+            ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente", "Organista (S/N)  ", "Nacionalidades Base (contagens)", "Total Base"  , "Outras Nacionalidades (list)", "Total Outras ", "Nao Pagantes Hora"  , "Total Visitantes Hora    "])
+
+        # iterar apenas horas com registos
+        for hh in sorted(hora_groups.keys()):
+            group = hora_groups[hh]
+            intervalo = f"{hh}:00-{hh}:59"
+            dia_sem = ''
+            try:
+                dia_sem = weekdays_pt[datetime.strptime(hoje, "%Y-%m-%d").weekday()]
+            except Exception:
+                dia_sem = ''
+
+            # assistente mais frequente na hora
+            assistentes = [g['assistente'] or '' for g in group]
+            assistente_counter = Counter(assistentes)
+            assistente_top = ''
+            if assistente_counter:
+                assistente_top = assistente_counter.most_common(1)[0][0]
+
+            # organista presente?
+            organista_flag = 'S' if hh in organista_hours else 'N'
+
+            # nacionalidades
+            base_counts = Counter()
+            outras_counts = Counter()
+            for g in group:
+                nat = (g.get('nacionalidade') or '').strip()
+                if not nat:
+                    continue
+                if nat.lower() in base_lower:
+                    idx = base_lower.index(nat.lower())
+                    base_key = BASE_NACIONALIDADES[idx]
+                    base_counts[base_key] += 1
+                else:
+                    outras_counts[nat] += 1
+
+            total_base = sum(base_counts.values())
+            total_outras = sum(outras_counts.values())
+
+            # não pagantes por hora: usar eventos 'nao_entraram' agrupados por hora
+            nao_pagantes_hora = nao_entraram_by_hour.get(hh, 0)
+            total_visitantes_hora = len(group)
+
+            total_visitantes_dia += total_visitantes_hora
+
+            # formatar colunas de nacionalidades
+            base_fmt = "; ".join([f"{k}: {v}" for k, v in base_counts.items()]) if base_counts else ""
+            outras_fmt = "; ".join([f"{k}: {v}" for k, v in outras_counts.items()]) if outras_counts else ""
+
+            ws.append([hoje, intervalo, dia_sem, assistente_top, organista_flag, base_fmt, total_base, outras_fmt, total_outras, nao_pagantes_hora, total_visitantes_hora])
+
+        # totais do dia
+        try:
+            ws.append([])
+            ws.append(['', '', '', '', '', '', '', '', '', total_nao_pagantes_dia, total_visitantes_dia])
+        except Exception:
+            pass
+
+        # formatação: cabeçalho em negrito, larguras, alinhamentos e filtro
+        try:
+            # localizar a linha do cabeçalho novamente
+            hrow = None
+            for row_idx in range(1, ws.max_row + 1):
+                try:
+                    if str(ws.cell(row=row_idx, column=2).value).strip().lower() == 'intervalo':
+                        hrow = row_idx
+                        break
+                except Exception:
+                    continue
+            if hrow is None:
+                hrow = header_row
+
+            header_font = Font(bold=True)
+            for col in range(1, 12):
+                try:
+                    ws.cell(row=hrow, column=col).font = header_font
+                    ws.cell(row=hrow, column=col).alignment = Alignment(horizontal='center', vertical='center')
+                except Exception:
+                    pass
+
+            # congelar painéis após o cabeçalho
+            try:
+                ws.freeze_panes = ws.cell(row=hrow+1, column=1)
+            except Exception:
+                pass
+
+            # ajustar larguras de colunas automaticamente com base no conteúdo
+            from openpyxl.utils import get_column_letter
+            try:
+                last_row = ws.max_row
+                col_count = 11
+                max_widths = [0] * col_count
+                for col in range(1, col_count + 1):
+                    for row in range(hrow, last_row + 1):
+                        try:
+                            val = ws.cell(row=row, column=col).value
+                            if val is None:
+                                continue
+                            text = str(val)
+                            # considerar a linha mais longa em caso de wrap
+                            lines = text.splitlines()
+                            max_len = max((len(line) for line in lines), default=len(text))
+                            if max_len > max_widths[col - 1]:
+                                max_widths[col - 1] = max_len
+                        except Exception:
+                            continue
+
+                # aplicar largura com padding e limites mínimos/máximos
+                for i, mw in enumerate(max_widths, start=1):
+                    try:
+                        width = int(mw) + 2
+                        if width < 8:
+                            width = 8
+                        if width > 100:
+                            width = 100
+                        ws.column_dimensions[get_column_letter(i)].width = width
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # wrap text for nationality columns
+            for row in ws.iter_rows(min_row=hrow+1, min_col=6, max_col=9):
+                for cell in row:
+                    try:
+                        cell.alignment = Alignment(wrap_text=True)
+                    except Exception:
+                        pass
+
+            # aplicar autofiltro
+            try:
+                last_row = ws.max_row
+                ws.auto_filter.ref = f"A{hrow}:K{last_row}"
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        try:
+            wb.save(caminho)
+        except Exception:
+            pass
 
     def gerar_pdf(self):
         hoje = hoje_str()
