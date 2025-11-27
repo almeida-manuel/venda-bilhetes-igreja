@@ -2015,7 +2015,7 @@ class JanelaPrincipal:
 
         pasta = os.path.join("relatorios")
         os.makedirs(pasta, exist_ok=True)
-        caminho = os.path.join(pasta, "estatisticas_horario.xlsx")
+        caminho = os.path.join(pasta, "Estatísticas.xlsx")
 
         # definir nacionalidades base (consistente com a UI)
         BASE_NACIONALIDADES = ["Português", "Brasileiro", "Espanhol", "Inglês", "Francês", "Italiano", "Asiático", "Alemão"]
@@ -2078,7 +2078,7 @@ class JanelaPrincipal:
             else:
                 wb = Workbook()
                 ws = wb.active
-                ws.title = 'Estatisticas_Horario'
+                ws.title = 'Estatísticas'
                 # título e metadados
                 ws.append(["Estatísticas Horário"])
 
@@ -2087,9 +2087,8 @@ class JanelaPrincipal:
         except Exception:
             wb = Workbook()
             ws = wb.active
-            ws.title = 'Estatisticas_Horario'
+            ws.title = 'Estatísticas'
             ws.append(["Estatísticas Horário"])
-            ws.append([f"Gerado em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
             ws.append([""])
             ws.append(["Descrição das Colunas:"])
             ws.append(["(ver descrições no topo do ficheiro)"])
@@ -2178,8 +2177,8 @@ class JanelaPrincipal:
 
         # totais do dia
         try:
-            ws.append([])
             ws.append(['', '', '', '', '', '', '', '', '', total_nao_pagantes_dia, total_visitantes_dia])
+            ws.append([])
         except Exception:
             pass
 
@@ -2264,6 +2263,259 @@ class JanelaPrincipal:
             pass
 
         try:
+            # --- Adicionar folha mensal com estatísticas do mês atual ---
+            try:
+                from collections import Counter
+                import calendar
+                from datetime import datetime
+
+                mes_key = hoje[:7]  # 'YYYY-MM'
+                # traduzir mês para nome em português (para exibição)
+                try:
+                    month_num = int(mes_key.split('-')[1])
+                    months_pt = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+                    mes_nome_pt = months_pt[month_num - 1]
+                except Exception:
+                    mes_nome_pt = mes_key
+
+                # buscar registos do mês
+                try:
+                    self.db.cursor.execute(
+                        "SELECT data_hora, assistente, nacionalidade FROM registos WHERE substr(data_hora,1,7) = ? ORDER BY data_hora",
+                        (mes_key,)
+                    )
+                    month_rows = self.db.cursor.fetchall()
+                except Exception:
+                    month_rows = []
+
+                total_visitors_month = len(month_rows)
+
+                # nao_entraram mensal (somar counts dos eventos)
+                try:
+                    self.db.cursor.execute(
+                        "SELECT SUM(count) FROM eventos WHERE event_type = 'nao_entraram' AND substr(timestamp,1,7) = ?",
+                        (mes_key,)
+                    )
+                    nao_sum = self.db.cursor.fetchone()[0]
+                    total_nao_entraram_month = int(nao_sum or 0)
+                except Exception:
+                    total_nao_entraram_month = 0
+
+                # nacionalidades do mês
+                nat_counter = Counter()
+                hours_set = set()
+                days_set = set()
+                visitors_by_hour_interval = {f"{h:02d}:00-{h:02d}:59": 0 for h in range(24)}
+                visitors_by_weekday = Counter()
+                hours_by_weekday_sets = {i: set() for i in range(7)}
+
+                for r in month_rows:
+                    dt = r[0]
+                    try:
+                        date_part = dt[:10]
+                        hour_key = dt[:13]  # YYYY-MM-DD HH
+                        hh = dt[11:13]
+                    except Exception:
+                        continue
+                    nat = (r[2] or '').strip()
+                    if nat:
+                        nat_counter[nat] += 1
+                    hours_set.add(hour_key)
+                    days_set.add(date_part)
+                    visitors_by_hour_interval[f"{int(hh):02d}:00-{int(hh):02d}:59"] += 1
+                    # weekday: Monday=0
+                    try:
+                        wd = datetime.strptime(date_part, "%Y-%m-%d").weekday()
+                        visitors_by_weekday[wd] += 1
+                        hours_by_weekday_sets[wd].add(hour_key)
+                    except Exception:
+                        pass
+
+                total_hours_with_visitors = len(hours_set)
+
+                # organista hours across month
+                organist_hours_month = set()
+                try:
+                    self.db.cursor.execute(
+                        "SELECT timestamp FROM eventos WHERE event_type = 'organista_entrada' AND substr(timestamp,1,7) = ?",
+                        (mes_key,)
+                    )
+                    evs = self.db.cursor.fetchall()
+                    for e in evs:
+                        try:
+                            ts = e[0]
+                            organist_hours_month.add(ts[:13])
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # visitors with/without organist
+                visitors_with_organist = 0
+                visitors_without_organist = 0
+                hours_with_organist = set()
+                for r in month_rows:
+                    try:
+                        hour_key = r[0][:13]
+                    except Exception:
+                        continue
+                    if hour_key in organist_hours_month:
+                        visitors_with_organist += 1
+                        hours_with_organist.add(hour_key)
+                    else:
+                        visitors_without_organist += 1
+
+                hours_with_organist_count = len(hours_with_organist)
+                hours_without_organist_count = total_hours_with_visitors - hours_with_organist_count
+
+                visitors_per_hour_with_organist = visitors_with_organist / hours_with_organist_count if hours_with_organist_count else 0
+                visitors_per_hour_without_organist = visitors_without_organist / hours_without_organist_count if hours_without_organist_count else 0
+
+                avg_visitors_per_day = total_visitors_month / len(days_set) if len(days_set) else 0
+
+                # visitors per weekday and hours per weekday and avg per hour per weekday
+                weekdays_pt = ["Segunda-feira", "Terça-feira", "Quarta-feira", "Quinta-feira", "Sexta-feira", "Sábado", "Domingo"]
+                visitors_by_weekday_named = {weekdays_pt[k]: v for k, v in visitors_by_weekday.items()}
+                hours_by_weekday = {weekdays_pt[k]: len(s) for k, s in hours_by_weekday_sets.items()}
+                avg_by_weekday = {}
+                for k in range(7):
+                    name = weekdays_pt[k]
+                    hrs = hours_by_weekday.get(name, 0)
+                    vis = visitors_by_weekday.get(k, 0)
+                    avg_by_weekday[name] = (vis / hrs) if hrs else 0
+
+                # criar ou substituir folha mensal
+                mensal_name = f"Mensal_{mes_key}"
+                if mensal_name in wb.sheetnames:
+                    ws_m = wb[mensal_name]
+                    wb.remove(ws_m)
+                ws_m = wb.create_sheet(title=mensal_name)
+
+                # preencher com métricas principais
+                ws_m.append([f"Estatísticas Mensais - {mes_nome_pt}"])
+                ws_m.append([""])
+                ws_m.append(["Métrica", "Valor"])
+                rows_metrics = [
+                    ("Mês", mes_nome_pt),
+                    ("Número de visitantes", total_visitors_month),
+                    ("Número de não pagantes", total_nao_entraram_month),
+                    ("Número de horas com visitas", total_hours_with_visitors),
+                    ("Número de visitantes c/ organista", visitors_with_organist),
+                    ("Número de horas com organista", hours_with_organist_count),
+                    ("Número de visitantes s/ organista", visitors_without_organist),
+                    ("Número de horas s/ organista", hours_without_organist_count),
+                    ("Visitantes por hora (com organista)", round(visitors_per_hour_with_organist,2)),
+                    ("Visitantes por hora (s/ organista)", round(visitors_per_hour_without_organist,2)),
+                    ("Média de visitantes por dia", round(avg_visitors_per_day,2)),
+                ]
+                for m in rows_metrics:
+                    ws_m.append(list(m))
+
+                ws_m.append([""])
+
+                # nacionalidades tabela
+                ws_m.append(["Nacionalidade", "Quantidade"])
+                for nat, cnt in nat_counter.most_common():
+                    ws_m.append([nat, cnt])
+
+                ws_m.append([""])
+
+                # visitantes por hora (intervalos)
+                ws_m.append(["Intervalo Hora", "Visitantes no Mês"])
+                # listar apenas intervalos com visitantes (evitar linhas vazias)
+                for k in sorted(visitors_by_hour_interval.keys()):
+                    cnt = visitors_by_hour_interval[k]
+                    if cnt > 0:
+                        ws_m.append([k, cnt])
+
+                ws_m.append([""])
+
+                # visitantes por dia da semana
+                ws_m.append(["Dia da Semana", "Visitantes", "Horas com visitas", "Média visitantes/hora"])
+                for name in weekdays_pt:
+                    vis = visitors_by_weekday.get(weekdays_pt.index(name), 0)
+                    hrs = hours_by_weekday.get(name, 0)
+                    avg = round(avg_by_weekday.get(name, 0), 2)
+                    ws_m.append([name, vis, hrs, avg])
+
+                # formatação simples para a folha mensal (negrito nos headers)
+                try:
+                    bold = Font(bold=True)
+                    # aplicar negrito às primeiras linhas de cabeçalho
+                    ws_m['A4'].font = bold
+                    # bold nas cabeças das tabelas (aproximamos: procurar linhas com texto específico)
+                    for row_idx in range(1, ws_m.max_row + 1):
+                        try:
+                            val = str(ws_m.cell(row=row_idx, column=1).value or '').lower()
+                            if any(h in val for h in ('nacionalidade', 'intervalo hora', 'diasemana', 'métrica', 'intervalo')):
+                                for col in range(1, ws_m.max_column + 1):
+                                    try:
+                                        ws_m.cell(row=row_idx, column=col).font = bold
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # formatação adicional: auto-ajustar colunas, freeze e autofiltro
+                try:
+                    from openpyxl.utils import get_column_letter
+                    max_cols = ws_m.max_column
+                    max_rows = ws_m.max_row
+                    max_widths = [0] * max_cols
+                    for col in range(1, max_cols + 1):
+                        for row in range(1, max_rows + 1):
+                            try:
+                                v = ws_m.cell(row=row, column=col).value
+                                if v is None:
+                                    continue
+                                s = str(v)
+                                lines = s.splitlines()
+                                l = max((len(x) for x in lines), default=len(s))
+                                if l > max_widths[col - 1]:
+                                    max_widths[col - 1] = l
+                            except Exception:
+                                continue
+                    for i, mw in enumerate(max_widths, start=1):
+                        try:
+                            w = int(mw) + 2
+                            if w < 8:
+                                w = 8
+                            if w > 120:
+                                w = 120
+                            ws_m.column_dimensions[get_column_letter(i)].width = w
+                        except Exception:
+                            pass
+                    # wrap text for nationality column if present
+                    for row in ws_m.iter_rows(min_row=1, max_row=max_rows, min_col=1, max_col=max_cols):
+                        for cell in row:
+                            try:
+                                cell.alignment = Alignment(wrap_text=True)
+                            except Exception:
+                                pass
+                    # freeze top rows to keep title/legend visible
+                    try:
+                        ws_m.freeze_panes = ws_m['A6']
+                    except Exception:
+                        pass
+                    # apply autofilter to the main tables where possible: try to find the 'Intervalo Hora' header row
+                    try:
+                        for r in range(1, max_rows + 1):
+                            try:
+                                if str(ws_m.cell(row=r, column=1).value).strip().lower() == 'intervalo hora':
+                                    last = max_rows
+                                    ws_m.auto_filter.ref = f"A{r}:B{last}"
+                                    break
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
             wb.save(caminho)
         except Exception:
             pass
