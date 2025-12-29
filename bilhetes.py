@@ -1802,6 +1802,12 @@ class JanelaPrincipal:
             except Exception:
                 self.final_notes = None
             popup.destroy()
+            # gravar anotações finais como um evento para posterior agregação mensal
+            try:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.db.inserir_evento('anotacoes_finais', count=None, assistente=getattr(self, 'assistente', None), notes=self.final_notes, timestamp=ts)
+            except Exception:
+                pass
             # marcar dia fechado e seguir
             self.dia_fechado = True
             # desativar inputs
@@ -2021,10 +2027,10 @@ class JanelaPrincipal:
         BASE_NACIONALIDADES = ["Português", "Brasileiro", "Espanhol", "Inglês", "Francês", "Italiano", "Asiático", "Alemão"]
         base_lower = [b.lower() for b in BASE_NACIONALIDADES]
 
-        # obter todos os registos do dia para agrupar por hora
+        # obter todos os registos do dia para agrupar por hora (inclui anotacoes)
         try:
             self.db.cursor.execute(
-                "SELECT data_hora, assistente, nacionalidade, metodo_pagamento, preco FROM registos WHERE date(data_hora) = ? ORDER BY data_hora",
+                "SELECT data_hora, assistente, nacionalidade, metodo_pagamento, preco, anotacoes FROM registos WHERE date(data_hora) = ? ORDER BY data_hora",
                 (hoje,)
             )
             rows = self.db.cursor.fetchall()
@@ -2082,8 +2088,8 @@ class JanelaPrincipal:
                 # título e metadados
                 ws.append(["Estatísticas Horário"])
 
-                # cabeçalho da tabela
-                ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente", "Organista (S/N)", "Nacionalidades Base (contagens)", "Total Base", "Outras Nacionalidades (list)", "Total Outras", "Nao Pagantes Hora", "Total Visitantes Hora"])
+                # cabeçalho da tabela (agora com dois assistentes e coluna de anotações)
+                ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente 1", "Assistente 1 Quantidade", "Assistente 2", "Assistente 2 Quantidade", "Organista (S/N)", "Nacionalidades Base (contagens)", "Total Base", "Outras Nacionalidades (list)", "Total Outras", "Nao Pagantes Hora", "Total Visitantes Hora", "Anotacoes (Registos + Finais)"])
         except Exception:
             wb = Workbook()
             ws = wb.active
@@ -2124,7 +2130,7 @@ class JanelaPrincipal:
                 continue
         if header_row is None:
             header_row = ws.max_row + 1
-            ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente", "Organista (S/N)  ", "Nacionalidades Base (contagens)", "Total Base"  , "Outras Nacionalidades (list)", "Total Outras ", "Nao Pagantes Hora"  , "Total Visitantes Hora    "])
+            ws.append(["Dia", "Intervalo", "Dia da Semana", "Assistente 1", "Assistente 1 (cnt)", "Assistente 2", "Assistente 2 (cnt)", "Organista (S/N)", "Nacionalidades Base (contagens)", "Total Base", "Outras Nacionalidades (list)", "Total Outras", "Nao Pagantes Hora", "Total Visitantes Hora", "Anotacoes (Registos + Finais)"])
 
         # iterar apenas horas com registos
         for hh in sorted(hora_groups.keys()):
@@ -2136,12 +2142,14 @@ class JanelaPrincipal:
             except Exception:
                 dia_sem = ''
 
-            # assistente mais frequente na hora
+            # assistentes na hora (até 2, com contagens) - evita sobreposição quando há dois
             assistentes = [g['assistente'] or '' for g in group]
-            assistente_counter = Counter(assistentes)
-            assistente_top = ''
-            if assistente_counter:
-                assistente_top = assistente_counter.most_common(1)[0][0]
+            assistente_counter = Counter([a for a in assistentes if a])
+            top_ass = assistente_counter.most_common(2)
+            assistente_1 = top_ass[0][0] if len(top_ass) > 0 else ''
+            assistente_1_cnt = top_ass[0][1] if len(top_ass) > 0 else 0
+            assistente_2 = top_ass[1][0] if len(top_ass) > 1 else ''
+            assistente_2_cnt = top_ass[1][1] if len(top_ass) > 1 else 0
 
             # organista presente?
             organista_flag = 'S' if hh in organista_hours else 'N'
@@ -2149,6 +2157,8 @@ class JanelaPrincipal:
             # nacionalidades
             base_counts = Counter()
             outras_counts = Counter()
+            # coletar anotações deste grupo
+            anot_list = []
             for g in group:
                 nat = (g.get('nacionalidade') or '').strip()
                 if not nat:
@@ -2159,6 +2169,15 @@ class JanelaPrincipal:
                     base_counts[base_key] += 1
                 else:
                     outras_counts[nat] += 1
+                # coletar anotacoes de cada registo
+                a = g.get('anotacoes')
+                if a:
+                    try:
+                        text = str(a).strip()
+                        if text:
+                            anot_list.append(text)
+                    except Exception:
+                        pass
 
             total_base = sum(base_counts.values())
             total_outras = sum(outras_counts.values())
@@ -2167,17 +2186,26 @@ class JanelaPrincipal:
             nao_pagantes_hora = nao_entraram_by_hour.get(hh, 0)
             total_visitantes_hora = len(group)
 
+            # anotações: juntar anotações dos registos e anexar anotações finais do dia (se existirem)
+            anotacoes_comb = '; '.join(anot_list) if anot_list else ''
+            final_notes = getattr(self, 'final_notes', None)
+            if final_notes:
+                if anotacoes_comb:
+                    anotacoes_comb = anotacoes_comb + ' || Finais: ' + str(final_notes)
+                else:
+                    anotacoes_comb = 'Finais: ' + str(final_notes)
+
             total_visitantes_dia += total_visitantes_hora
 
             # formatar colunas de nacionalidades
             base_fmt = "; ".join([f"{k}: {v}" for k, v in base_counts.items()]) if base_counts else ""
             outras_fmt = "; ".join([f"{k}: {v}" for k, v in outras_counts.items()]) if outras_counts else ""
 
-            ws.append([hoje, intervalo, dia_sem, assistente_top, organista_flag, base_fmt, total_base, outras_fmt, total_outras, nao_pagantes_hora, total_visitantes_hora])
+            ws.append([hoje, intervalo, dia_sem, assistente_1, assistente_1_cnt, assistente_2, assistente_2_cnt, organista_flag, base_fmt, total_base, outras_fmt, total_outras, nao_pagantes_hora, total_visitantes_hora, anotacoes_comb])
 
         # totais do dia
         try:
-            ws.append(['', '', '', '', '', '', '', '', '', total_nao_pagantes_dia, total_visitantes_dia])
+            ws.append(['', '', '', '', '', '', '', '', '', '', '', 'Total não pagantes:', total_nao_pagantes_dia, 'Total visitantes:', total_visitantes_dia])
             ws.append([])
         except Exception:
             pass
@@ -2197,7 +2225,7 @@ class JanelaPrincipal:
                 hrow = header_row
 
             header_font = Font(bold=True)
-            for col in range(1, 12):
+            for col in range(1, 16):
                 try:
                     ws.cell(row=hrow, column=col).font = header_font
                     ws.cell(row=hrow, column=col).alignment = Alignment(horizontal='center', vertical='center')
@@ -2214,7 +2242,7 @@ class JanelaPrincipal:
             from openpyxl.utils import get_column_letter
             try:
                 last_row = ws.max_row
-                col_count = 11
+                col_count = 15
                 max_widths = [0] * col_count
                 for col in range(1, col_count + 1):
                     for row in range(hrow, last_row + 1):
@@ -2245,8 +2273,8 @@ class JanelaPrincipal:
             except Exception:
                 pass
 
-            # wrap text for nationality columns
-            for row in ws.iter_rows(min_row=hrow+1, min_col=6, max_col=9):
+            # wrap text for nationality and annotations columns
+            for row in ws.iter_rows(min_row=hrow+1, min_col=9, max_col=15):
                 for cell in row:
                     try:
                         cell.alignment = Alignment(wrap_text=True)
@@ -2256,7 +2284,7 @@ class JanelaPrincipal:
             # aplicar autofiltro
             try:
                 last_row = ws.max_row
-                ws.auto_filter.ref = f"A{hrow}:K{last_row}"
+                ws.auto_filter.ref = f"A{hrow}:O{last_row}"
             except Exception:
                 pass
         except Exception:
@@ -2455,6 +2483,28 @@ class JanelaPrincipal:
                                         pass
                         except Exception:
                             pass
+                except Exception:
+                    pass
+                # incluir anotações finais do mês (event_type = 'anotacoes_finais')
+                try:
+                    ws_m.append([""])
+                    ws_m.append(["Anotações Finais do Mês:"])
+                    # buscar eventos
+                    try:
+                        self.db.cursor.execute("SELECT timestamp, notes, assistente FROM eventos WHERE event_type = 'anotacoes_finais' AND substr(timestamp,1,7) = ? ORDER BY timestamp", (mes_key,))
+                        finals = self.db.cursor.fetchall()
+                    except Exception:
+                        finals = []
+                    if finals:
+                        ws_m.append(["Data", "Assistente (registo)", "Anotações"])
+                        for ts, notes, assist in finals:
+                            try:
+                                date_part = ts.split(' ')[0]
+                            except Exception:
+                                date_part = ts
+                            ws_m.append([date_part, assist or '', notes or ''])
+                    else:
+                        ws_m.append(["(Sem anotações finais registadas neste mês)"])
                 except Exception:
                     pass
 
